@@ -268,6 +268,39 @@ textarea{resize:vertical; min-height:80px; line-height:1.55;}
 }
 
 
+/* switch row + CSS cheatsheet */
+.switch-row{
+  display:flex; align-items:center; justify-content:space-between; gap:12px;
+  padding:10px 12px; margin-top:8px; background:var(--surface-2);
+  border:1px solid var(--border); border-radius:10px; font-size:13px; cursor:pointer;
+}
+.switch-row input{width:18px; height:18px; margin:0; flex-shrink:0;}
+.css-help{
+  margin-top:8px; border:1px solid var(--border); border-radius:10px;
+  background:var(--surface-2); overflow:hidden;
+}
+.css-help > summary{
+  list-style:none; cursor:pointer; padding:9px 12px; font-size:12px; color:var(--ink-soft);
+  display:flex; align-items:center; gap:6px;
+}
+.css-help > summary::-webkit-details-marker{display:none;}
+.css-help .ch-body{padding:0 12px 12px;}
+.css-help .ch-item{
+  border-top:1px solid var(--border); padding:9px 0 0; margin-top:9px;
+}
+.css-help .ch-item:first-child{border-top:none; margin-top:0;}
+.css-help .ch-sel{
+  font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; color:var(--accent); font-weight:600;
+}
+.css-help .ch-desc{font-size:11px; color:var(--ink-faint); margin-top:2px;}
+.css-help .ch-eg{
+  display:block; width:100%; text-align:left; margin-top:6px; padding:7px 9px;
+  background:var(--bg); border:1px solid var(--border); border-radius:7px; cursor:pointer;
+  font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11.5px; color:var(--ink-soft);
+  white-space:pre-wrap; line-height:1.5;
+}
+.css-help .ch-eg:hover{border-color:var(--accent);}
+
 /* floating audio player */
 .audio-bar{
   position:fixed; left:50%; transform:translateX(-50%) translateY(120%); bottom:calc(78px + env(safe-area-inset-bottom));
@@ -380,6 +413,7 @@ textarea{resize:vertical; min-height:80px; line-height:1.55;}
           <button class="btn sm ghost" id="clearCustomCssBtn">清除</button>
         </div>
         <div class="hint-text">自定义 CSS 会叠加在当前明暗主题之上,可用来覆盖 --accent 等变量或任意选择器样式。</div>
+        <div id="appCssHelpMount"></div>
       </div>
       <div class="section-title" style="display:flex; align-items:center; gap:8px;">
         <span>语音预设</span>
@@ -465,7 +499,12 @@ const ICONS = {
   sparkle: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M18.5 15.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z"/></svg>',
   play: '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M8 5.5v13l10-6.5z"/></svg>',
   pause: '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><rect x="7" y="5.5" width="3.4" height="13" rx="1"/><rect x="13.6" y="5.5" width="3.4" height="13" rx="1"/></svg>',
-  stop: '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/></svg>'
+  stop: '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/></svg>',
+  fadeMode: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M8 4v16" opacity=".85"/><path d="M12 4v16" opacity=".55"/><path d="M16 4v16" opacity=".25"/></svg>',
+  verticalMode: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="3" width="16" height="8" rx="1.5"/><rect x="4" y="13" width="16" height="8" rx="1.5"/><path d="M12 11.5v2"/></svg>',
+  flipMode: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 4v16"/><path d="M12 5l-7 1.5v11L12 19"/><path d="M12 5l7 1.5v11L12 19" opacity=".45"/></svg>',
+  instantMode: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M13 8l-3 4h4l-3 4"/></svg>',
+  code: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M9 7l-5 5 5 5M15 7l5 5-5 5"/></svg>'
 };
 
 /* ================= IndexedDB layer ================= */
@@ -548,6 +587,10 @@ function initTheme(){
   document.querySelectorAll('[data-theme-choice]').forEach(b=>{
     b.addEventListener('click', ()=> applyTheme(b.dataset.themeChoice));
   });
+  const helpMount = document.getElementById('appCssHelpMount');
+  helpMount.innerHTML = cssHelpPanel('app');
+  bindCssHelp(helpMount, 'app', document.getElementById('customCssInput'));
+
   const savedCss = localStorage.getItem('mmr_custom_css') || '';
   if(savedCss){
     document.getElementById('customCssInput').value = savedCss;
@@ -2229,14 +2272,16 @@ function paintDetail(overlay, book){
 // Splits raw content on blank lines. A block that begins with '<' is treated as
 // trusted embedded HTML/CSS and rendered as-is. Everything else is escaped and
 // wrapped as normal reading paragraphs (so plain prose reads like a real book).
+/* Every generated element carries an mm- class so custom CSS has a stable hook
+   to target (see the cheatsheet under the custom-CSS inputs). */
 function renderContentHtml(raw){
   if(!raw) return '';
   const blocks = raw.split(/\n\s*\n/);
   return blocks.map(block=>{
     const trimmed = block.trim();
     if(!trimmed) return '';
-    if(/^</.test(trimmed)) return trimmed;
-    return `<p>${escapeHtml(trimmed).replace(/\n/g,'<br>')}</p>`;
+    if(/^</.test(trimmed)) return `<div class="mm-html">${trimmed}</div>`;
+    return `<p class="mm-p">${escapeHtml(trimmed).replace(/\n/g,'<br>')}</p>`;
   }).join('\n');
 }
 function currentThemeVars(){
@@ -2251,6 +2296,22 @@ function parseFontFamily(url){
     return decodeURIComponent(m[1]).split(':')[0].split(',')[0].replace(/\+/g,' ').trim();
   }catch(e){ return ''; }
 }
+/* Page-turn styles. Everything animates the single content strip rather than
+   compositing two page layers, because a two-layer effect (a page sliding over
+   the one below, a real book-curl) needs a duplicate of the content DOM — and
+   duplicating it would kill the interactivity of HTML widgets embedded in the
+   text, which the reader is built around. */
+const PAGE_EFFECTS = [
+  { id:'scroll',   name:'竖屏滑动', icon:'scrollMode' },
+  { id:'paginate', name:'左右平移', icon:'pageMode' },
+  { id:'fade',     name:'淡入淡出', icon:'fadeMode' },
+  { id:'vertical', name:'上下翻页', icon:'verticalMode' },
+  { id:'flip',     name:'立体翻转', icon:'flipMode' },
+  { id:'instant',  name:'无动画',   icon:'instantMode' }
+];
+const PAGINATED_EFFECTS = ['paginate','fade','vertical','flip','instant'];
+function isPaginatedEffect(effect){ return PAGINATED_EFFECTS.indexOf(effect) >= 0; }
+
 function safeAreaInset(side){
   const probe = document.createElement('div');
   probe.style.cssText = `position:fixed; left:0; bottom:0; width:0; pointer-events:none; visibility:hidden; height:env(safe-area-inset-${side},0px);`;
@@ -2263,12 +2324,13 @@ function buildReaderDoc(entry, book, insets){
   const t = currentThemeVars();
   const rs = book.readerSettings || {};
   const promptBlock = (book.type==='extra' && entry.prompt) ?
-    `<div class="epigraph">${escapeHtml(entry.prompt).replace(/\n/g,'<br>')}</div>` : '';
-  const bodyHtml = renderContentHtml(entry.content || '') || `<p style="color:${t.inkSoft};">(还没有正文内容)</p>`;
+    `<div class="epigraph mm-prompt">${escapeHtml(entry.prompt).replace(/\n/g,'<br>')}</div>` : '';
+  const bodyHtml = renderContentHtml(entry.content || '') || `<p class="mm-p" style="color:${t.inkSoft};">(还没有正文内容)</p>`;
   const bg = rs.background ? rs.background : t.bg;
   const fontFamily = rs.fontUrl ? parseFontFamily(rs.fontUrl) : '';
   const fontLink = rs.fontUrl ? `<link rel="stylesheet" href="${rs.fontUrl}">` : '';
-  const isPaginate = rs.pageEffect === 'paginate';
+  const effect = rs.pageEffect || 'scroll';
+  const isPaginate = isPaginatedEffect(effect);
 
   /* The reader chrome (topbar / page nav) floats above the iframe, so the
      document has to reserve room for it or the first and last lines end up
@@ -2301,17 +2363,20 @@ function buildReaderDoc(entry, book, insets){
     #pages .inner > *{ max-width:100%; }
     ${isPaginate ? `
       html,body{ overflow:hidden; }
-      #pages{ overflow:hidden; transition:transform .28s ease; touch-action:pan-y; }
+      body{ perspective:1400px; }
+      #pages{ overflow:hidden; touch-action:pan-y; transform-origin:50% 50%; backface-visibility:hidden; }
     ` : ''}
   `;
 
   const script = isPaginate ? `
   <script>
   (function(){
-    var pageIndex = 0, totalPages = 1, pagesEl, innerEl;
+    var EFFECT = ${JSON.stringify(effect)};
     var PAD_TOP = ${padTop}, PAD_BOTTOM = ${padBottom};
-    var touchStartX=null, touchStartY=null, moved=false;
+    var pageIndex = 0, totalPages = 1, pagesEl, innerEl, animating = false;
+    var dragStartX = null, dragStartY = null, dragDx = 0, dragging = false, moved = false, pointerDown = false;
 
+    /* ---------- layout ---------- */
     function applyColumns(vw, vh, n){
       pagesEl.style.width = (n*vw) + 'px';
       pagesEl.style.height = vh + 'px';
@@ -2336,6 +2401,7 @@ function buildReaderDoc(entry, book, insets){
     function layout(){
       var vw = window.innerWidth, vh = window.innerHeight;
       pagesEl.style.transition = 'none';
+      pagesEl.style.opacity = '1';
       pagesEl.style.transform = 'none';
       pagesEl.style.columnWidth = '';
       pagesEl.style.columnGap = '';
@@ -2354,20 +2420,173 @@ function buildReaderDoc(entry, book, insets){
       }
       if(pageIndex > totalPages-1) pageIndex = totalPages-1;
       if(pageIndex < 0) pageIndex = 0;
-      requestAnimationFrame(function(){
-        pagesEl.style.transition = 'transform .28s ease';
-        applyTransform();
-      });
+      animating = false;
+      requestAnimationFrame(function(){ settle(); });
     }
-    function applyTransform(){
-      pagesEl.style.transform = 'translateX(' + (-pageIndex*window.innerWidth) + 'px)';
+
+    /* ---------- transforms ---------- */
+    function baseX(i){ return -i * window.innerWidth; }
+    function setTransform(str, opacity){
+      pagesEl.style.transform = str;
+      pagesEl.style.opacity = (opacity === undefined) ? '1' : String(opacity);
+    }
+    // Resting state for the current page, with no animation in flight.
+    function settle(){
+      pagesEl.style.transition = 'none';
+      setTransform('translateX(' + baseX(pageIndex) + 'px)', 1);
+      report();
+    }
+    function report(){
       parent.postMessage({mmReaderPage:true, index:pageIndex, total:totalPages}, '*');
     }
-    function goTo(i){
-      if(i<0) i=0; if(i>totalPages-1) i=totalPages-1;
-      pageIndex = i;
-      applyTransform();
+    function transitionTo(transform, opacity, ms, easing, done){
+      pagesEl.style.transition = 'transform ' + ms + 'ms ' + easing + ', opacity ' + ms + 'ms ' + easing;
+      requestAnimationFrame(function(){
+        setTransform(transform, opacity);
+        setTimeout(done, ms);
+      });
     }
+
+    /* Each effect is two halves: carry the outgoing page away, jump the strip
+       to the new page while it is invisible or off-screen, then bring it in. */
+    function animateTo(target){
+      var vw = window.innerWidth, vh = window.innerHeight;
+      var forward = target > pageIndex;
+      if(EFFECT === 'instant'){ pageIndex = target; settle(); return; }
+      if(EFFECT === 'paginate'){
+        pageIndex = target;
+        animating = true;
+        transitionTo('translateX(' + baseX(target) + 'px)', 1, 280, 'ease', function(){
+          animating = false; settle();
+        });
+        return;
+      }
+      animating = true;
+      var outT, inFrom;
+      if(EFFECT === 'fade'){
+        outT = 'translateX(' + baseX(pageIndex) + 'px)';
+        transitionTo(outT, 0, 160, 'ease-out', function(){
+          pageIndex = target;
+          pagesEl.style.transition = 'none';
+          setTransform('translateX(' + baseX(target) + 'px)', 0);
+          transitionTo('translateX(' + baseX(target) + 'px)', 1, 220, 'ease-in', finish);
+        });
+        return;
+      }
+      if(EFFECT === 'vertical'){
+        outT = 'translateX(' + baseX(pageIndex) + 'px) translateY(' + (forward ? -vh : vh) + 'px)';
+        inFrom = function(t){ return 'translateX(' + baseX(t) + 'px) translateY(' + (forward ? vh : -vh) + 'px)'; };
+        transitionTo(outT, 1, 190, 'ease-in', function(){
+          pageIndex = target;
+          pagesEl.style.transition = 'none';
+          setTransform(inFrom(target), 1);
+          transitionTo('translateX(' + baseX(target) + 'px) translateY(0px)', 1, 220, 'ease-out', finish);
+        });
+        return;
+      }
+      if(EFFECT === 'flip'){
+        outT = 'translateX(' + baseX(pageIndex) + 'px) rotateY(' + (forward ? -88 : 88) + 'deg)';
+        transitionTo(outT, 0.25, 200, 'ease-in', function(){
+          pageIndex = target;
+          pagesEl.style.transition = 'none';
+          setTransform('translateX(' + baseX(target) + 'px) rotateY(' + (forward ? 88 : -88) + 'deg)', 0.25);
+          transitionTo('translateX(' + baseX(target) + 'px) rotateY(0deg)', 1, 240, 'ease-out', finish);
+        });
+        return;
+      }
+      pageIndex = target; settle(); animating = false;
+      function finish(){ animating = false; settle(); }
+    }
+    function goTo(i){
+      if(animating) return;
+      if(i < 0) i = 0;
+      if(i > totalPages-1) i = totalPages-1;
+      if(i === pageIndex){ settle(); return; }
+      animateTo(i);
+    }
+
+    /* ---------- drag / swipe ---------- */
+    // The left-right styles track the finger; the others would need the
+    // neighbouring page rendered to do that, so they use a threshold instead.
+    var DRAG_FOLLOWS = (EFFECT === 'paginate');
+    function dragStart(x, y){
+      if(animating) return;
+      dragStartX = x; dragStartY = y; dragDx = 0; dragging = false; moved = false;
+    }
+    function dragMove(x, y){
+      if(dragStartX === null) return false;
+      var dx = x - dragStartX, dy = y - dragStartY;
+      if(!dragging && Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy)){ dragging = true; moved = true; }
+      if(!dragging) return false;
+      dragDx = dx;
+      if(DRAG_FOLLOWS){
+        // Rubber-band at the two ends so it is obvious there is nothing there.
+        var atEdge = (dx > 0 && pageIndex === 0) || (dx < 0 && pageIndex === totalPages-1);
+        var shift = atEdge ? dx * 0.28 : dx;
+        pagesEl.style.transition = 'none';
+        setTransform('translateX(' + (baseX(pageIndex) + shift) + 'px)', 1);
+      }
+      return true;
+    }
+    function dragEnd(){
+      if(dragStartX === null) return;
+      var dx = dragDx, wasDragging = dragging;
+      dragStartX = null; dragStartY = null; dragDx = 0; dragging = false;
+      if(!wasDragging) return;
+      var threshold = Math.min(70, window.innerWidth * 0.18);
+      if(Math.abs(dx) > threshold){
+        var target = dx < 0 ? pageIndex+1 : pageIndex-1;
+        if(target >= 0 && target <= totalPages-1){ goTo(target); return; }
+      }
+      if(DRAG_FOLLOWS){
+        // Snap back to where we started.
+        animating = true;
+        transitionTo('translateX(' + baseX(pageIndex) + 'px)', 1, 200, 'ease-out', function(){
+          animating = false; settle();
+        });
+      }
+    }
+
+    document.addEventListener('touchstart', function(e){
+      var tch = e.touches[0]; dragStart(tch.clientX, tch.clientY);
+    }, {passive:true});
+    document.addEventListener('touchmove', function(e){
+      var tch = e.touches[0]; dragMove(tch.clientX, tch.clientY);
+    }, {passive:true});
+    document.addEventListener('touchend', dragEnd, {passive:true});
+    document.addEventListener('touchcancel', dragEnd, {passive:true});
+
+    // Desktop: dragging with the mouse works the same way as a swipe.
+    document.addEventListener('mousedown', function(e){
+      if(e.button !== 0) return;
+      if(e.target.closest('a,button,input,textarea,select,[onclick],[role="button"],summary')) return;
+      pointerDown = true; dragStart(e.clientX, e.clientY);
+    });
+    document.addEventListener('mousemove', function(e){
+      if(!pointerDown) return;
+      if(dragMove(e.clientX, e.clientY)) e.preventDefault();
+    });
+    document.addEventListener('mouseup', function(){ if(pointerDown){ pointerDown = false; dragEnd(); } });
+    document.addEventListener('mouseleave', function(){ if(pointerDown){ pointerDown = false; dragEnd(); } });
+
+    document.addEventListener('keydown', function(e){
+      if(e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' '){ goTo(pageIndex+1); e.preventDefault(); }
+      else if(e.key === 'ArrowLeft' || e.key === 'PageUp'){ goTo(pageIndex-1); e.preventDefault(); }
+      else if(e.key === 'Home'){ goTo(0); }
+      else if(e.key === 'End'){ goTo(totalPages-1); }
+    });
+
+    document.addEventListener('click', function(e){
+      if(moved){ moved = false; return; }
+      var el = e.target.closest('a,button,input,textarea,select,[onclick],[role="button"],summary');
+      if(el) return;
+      var x = e.clientX, w = window.innerWidth;
+      if(x < w*0.3){ goTo(pageIndex-1); return; }
+      if(x > w*0.7){ goTo(pageIndex+1); return; }
+      parent.postMessage({mmReaderToggle:true}, '*');
+    });
+
+    /* ---------- boot ---------- */
     function boot(){
       if(pagesEl) return;
       pagesEl = document.getElementById('pages');
@@ -2383,38 +2602,11 @@ function buildReaderDoc(entry, book, insets){
     }
     window.addEventListener('resize', function(){ if(pagesEl) layout(); });
     window.addEventListener('message', function(e){
-      if(!e.data) return;
+      if(!e.data || !pagesEl) return;
       if(e.data.mmGoPrev) goTo(pageIndex-1);
       if(e.data.mmGoNext) goTo(pageIndex+1);
-      if(e.data.mmRelayout && pagesEl) layout();
-    });
-    document.addEventListener('touchstart', function(e){
-      var tch = e.touches[0];
-      touchStartX = tch.clientX; touchStartY = tch.clientY; moved = false;
-    }, {passive:true});
-    document.addEventListener('touchmove', function(e){
-      if(touchStartX===null) return;
-      var tch = e.touches[0];
-      var dx = tch.clientX - touchStartX, dy = tch.clientY - touchStartY;
-      if(Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy)) moved = true;
-    }, {passive:true});
-    document.addEventListener('touchend', function(e){
-      if(touchStartX===null) return;
-      var tch = e.changedTouches[0];
-      var dx = tch.clientX - touchStartX;
-      touchStartX = null;
-      if(moved && Math.abs(dx) > 40){
-        if(dx < 0) goTo(pageIndex+1); else goTo(pageIndex-1);
-      }
-    }, {passive:true});
-    document.addEventListener('click', function(e){
-      if(moved){ moved = false; return; }
-      var el = e.target.closest('a,button,input,textarea,select,[onclick],[role="button"],summary');
-      if(el) return;
-      var x = e.clientX, w = window.innerWidth;
-      if(x < w*0.3){ goTo(pageIndex-1); return; }
-      if(x > w*0.7){ goTo(pageIndex+1); return; }
-      parent.postMessage({mmReaderToggle:true}, '*');
+      if(e.data.mmGoPage !== undefined) goTo(e.data.mmGoPage);
+      if(e.data.mmRelayout) layout();
     });
   })();
   <\/script>
@@ -2428,7 +2620,83 @@ function buildReaderDoc(entry, book, insets){
   <\/script>
   `;
 
-  return `<!DOCTYPE html><html><head><meta charset="utf-8">${fontLink}<style>${baseCss}${rs.customCss||''}</style></head><body><div id="pages"><div class="inner">${promptBlock}${bodyHtml}</div></div></body>${script}</html>`;
+  return `<!DOCTYPE html><html><head><meta charset="utf-8">${fontLink}<style>${baseCss}${rs.customCss||''}</style></head><body class="mm-body"><div id="pages" class="mm-page"><div class="inner mm-content">${promptBlock}${bodyHtml}</div></div></body>${script}</html>`;
+}
+
+/* ================= Custom CSS cheatsheet =================
+   Both custom-CSS boxes get a list of the class names that actually exist,
+   with a runnable example under each that can be tapped straight into the
+   textarea — otherwise there is no way to know what to target. */
+const CSS_HELP = {
+  reader: [
+    { sel:'.mm-body',    desc:'阅读页整体(正文的 body)',
+      eg:'.mm-body{\n  font-size: 18px;\n  line-height: 2.1;\n}' },
+    { sel:'.mm-content', desc:'正文内容区,改左右留白用这个',
+      eg:'.mm-content{\n  padding: 0 30px;\n}' },
+    { sel:'.mm-p',       desc:'每一个正文段落',
+      eg:'.mm-p{\n  text-indent: 2em;\n  margin-bottom: 1.4em;\n}' },
+    { sel:'.mm-prompt',  desc:'番外顶部的"番外要求"卡片(长篇没有)',
+      eg:'.mm-prompt{\n  background: #efe6ff;\n  border-left-color: #7c5cff;\n}' },
+    { sel:'.mm-html',    desc:'正文里嵌入的 HTML 块的外层容器',
+      eg:'.mm-html{\n  margin: 26px 0;\n}' },
+    { sel:'.mm-page',    desc:'翻页容器,左右翻页时每一"页"就是它的一栏',
+      eg:'.mm-page{\n  padding-top: 90px;\n}' },
+    { sel:'a / img',     desc:'正文里的链接和图片',
+      eg:'.mm-content a{\n  text-decoration: underline;\n}\n.mm-content img{\n  border-radius: 14px;\n}' }
+  ],
+  app: [
+    { sel:'.app-header', desc:'顶部标题栏',
+      eg:'.app-header{\n  background: #fff6fa;\n}' },
+    { sel:'.bottom-nav / .nav-btn / .nav-btn.active', desc:'底部导航栏与其中的按钮',
+      eg:'.nav-btn.active{\n  color: #d2467f;\n}' },
+    { sel:'.book-grid / .book-card / .book-cover', desc:'书架网格、每本书的卡片和封面',
+      eg:'.book-card{\n  border-radius: 18px;\n  box-shadow: 0 4px 14px rgba(0,0,0,.08);\n}' },
+    { sel:'.entry-item', desc:'章节 / 番外 / 素材 / 预设的列表条目',
+      eg:'.entry-item{\n  border-left: 3px solid #d2467f;\n}' },
+    { sel:'.modal-sheet / .modal-header', desc:'从底部弹起的弹窗面板',
+      eg:'.modal-sheet{\n  border-radius: 26px 26px 0 0;\n}' },
+    { sel:'.btn / .btn.primary', desc:'普通按钮与主按钮',
+      eg:'.btn.primary{\n  background: #d2467f;\n  border-color: #d2467f;\n}' },
+    { sel:'.mini-tag / .p-role-tag', desc:'分类标签与角色标签',
+      eg:'.mini-tag{\n  background: #ffe9f2;\n}' },
+    { sel:'.fab', desc:'书架右下角的加号悬浮按钮',
+      eg:'.fab{\n  background: #d2467f;\n}' },
+    { sel:'.audio-bar', desc:'朗读时的悬浮播放条',
+      eg:'.audio-bar{\n  border-radius: 20px;\n}' }
+  ]
+};
+function cssHelpPanel(scope){
+  const items = CSS_HELP[scope] || [];
+  return `
+    <details class="css-help" data-css-help="${scope}">
+      <summary>${ICONS.code} 可以写哪些选择器?点开看示例(点示例可直接填进上面的框)</summary>
+      <div class="ch-body">
+        ${items.map((it,i)=>`
+          <div class="ch-item">
+            <div class="ch-sel">${escapeHtml(it.sel)}</div>
+            <div class="ch-desc">${escapeHtml(it.desc)}</div>
+            <button type="button" class="ch-eg" data-eg="${i}">${escapeHtml(it.eg)}</button>
+          </div>
+        `).join('')}
+      </div>
+    </details>
+  `;
+}
+function bindCssHelp(overlay, scope, textarea){
+  const panel = overlay.querySelector(`[data-css-help="${scope}"]`);
+  if(!panel || !textarea) return;
+  panel.querySelectorAll('.ch-eg').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const eg = (CSS_HELP[scope]||[])[parseInt(btn.dataset.eg, 10)];
+      if(!eg) return;
+      const cur = textarea.value.replace(/\s+$/, '');
+      textarea.value = cur ? (cur + '\n\n' + eg.eg) : eg.eg;
+      textarea.dispatchEvent(new Event('input', {bubbles:true}));
+      textarea.focus();
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+      showToast('已填入示例');
+    });
+  });
 }
 
 /* ================= Copy to clipboard ================= */
@@ -2516,17 +2784,22 @@ async function openReaderSettingsSheet(book, onSaved){
   const overlay = openModal(`
     <div class="modal-header"><h2>阅读设置</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
     <div class="modal-body">
-      <label class="field-label">阅读方式</label>
+      <label class="field-label">翻页样式</label>
       <div class="chip-row">
-        <button class="choice-chip" data-effect="scroll">${ICONS.scrollMode} 竖屏滑动</button>
-        <button class="choice-chip" data-effect="paginate">${ICONS.pageMode} 左右翻页</button>
+        ${PAGE_EFFECTS.map(ef=>`<button class="choice-chip" data-effect="${ef.id}">${ICONS[ef.icon]} ${ef.name}</button>`).join('')}
       </div>
+      <label class="switch-row" id="pageNavRow">
+        <span>显示底部页码条</span>
+        <input type="checkbox" id="showPageNavChk" ${rs.showPageNav === false ? '' : 'checked'}>
+      </label>
+      <div class="hint-text" id="pageNavHint">关掉之后靠左右滑动手势、点击屏幕左右两侧、或键盘方向键翻页。</div>
       <label class="field-label">背景</label>
       <div class="bg-swatch-row" id="bgSwatchRow"></div>
       <label class="field-label">字体链接(可选,如 Google Fonts CSS 链接)</label>
       <input type="text" id="fontUrlInput" placeholder="https://fonts.googleapis.com/css2?family=..." value="${escapeAttr(rs.fontUrl||'')}">
       <label class="field-label">注入自定义 CSS(可选)</label>
-      <textarea id="customCssInputR" style="min-height:90px;" placeholder="例如: body{ letter-spacing:.5px; }">${escapeHtml(rs.customCss||'')}</textarea>
+      <textarea id="customCssInputR" style="min-height:90px;" placeholder="例如: .mm-p{ text-indent:2em; }">${escapeHtml(rs.customCss||'')}</textarea>
+      ${cssHelpPanel('reader')}
 
       <label class="field-label">朗读语音预设</label>
       <select id="voicePresetSelect">${presetOptions(voicePresets, rs.voicePresetId||'')}</select>
@@ -2542,6 +2815,7 @@ async function openReaderSettingsSheet(book, onSaved){
     </div>
   `);
   overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
+  bindCssHelp(overlay, 'reader', overlay.querySelector('#customCssInputR'));
 
   let chosenBg = rs.background || '';
   const swatchRow = overlay.querySelector('#bgSwatchRow');
@@ -2561,11 +2835,17 @@ async function openReaderSettingsSheet(book, onSaved){
   }
   paintSwatches();
 
-  let chosenEffect = rs.pageEffect === 'paginate' ? 'paginate' : 'scroll';
+  let chosenEffect = PAGE_EFFECTS.some(ef=>ef.id === rs.pageEffect) ? rs.pageEffect : 'scroll';
+  const navRow = overlay.querySelector('#pageNavRow');
+  const navHint = overlay.querySelector('#pageNavHint');
   function paintEffectChips(){
     overlay.querySelectorAll('[data-effect]').forEach(b=>{
       b.classList.toggle('selected', b.dataset.effect === chosenEffect);
     });
+    // The page-nav switch only means anything for the paged styles.
+    const paged = isPaginatedEffect(chosenEffect);
+    navRow.style.display = paged ? 'flex' : 'none';
+    navHint.style.display = paged ? '' : 'none';
   }
   paintEffectChips();
   overlay.querySelectorAll('[data-effect]').forEach(b=>{
@@ -2576,6 +2856,7 @@ async function openReaderSettingsSheet(book, onSaved){
     book.readerSettings = {
       background: chosenBg,
       pageEffect: chosenEffect,
+      showPageNav: overlay.querySelector('#showPageNavChk').checked,
       customCss: overlay.querySelector('#customCssInputR').value,
       fontUrl: overlay.querySelector('#fontUrlInput').value.trim(),
       voicePresetId: (overlay.querySelector('#voicePresetSelect')||{}).value || '',
@@ -2624,7 +2905,7 @@ function openReaderPage(parentOverlay, book, entryId){
   function setCollapsed(state){
     topbar.classList.toggle('collapsed', state);
     peek.classList.toggle('show', state);
-    if((book.readerSettings||{}).pageEffect === 'paginate'){
+    if(pagenav.style.display !== 'none'){
       pagenav.classList.toggle('collapsed', state);
     }
   }
@@ -2651,14 +2932,18 @@ function openReaderPage(parentOverlay, book, entryId){
   function paintRendered(){
     setCollapsed(false);
     const body = reader.querySelector('#readerBody');
-    const isPaginate = (book.readerSettings||{}).pageEffect === 'paginate';
-    pagenav.style.display = isPaginate ? 'flex' : 'none';
+    const rs = book.readerSettings || {};
+    const isPaginate = isPaginatedEffect(rs.pageEffect || 'scroll');
+    // The nav bar is optional: with it off you page by swiping or tapping the
+    // left/right edge, which is what most people want on a phone.
+    const wantNav = isPaginate && rs.showPageNav !== false;
+    pagenav.style.display = wantNav ? 'flex' : 'none';
     pagenav.classList.remove('collapsed');
     // The iframe fills the whole overlay and the chrome floats on top of it,
     // so measure the chrome now and let the document reserve that much room.
     const insets = {
       top: topbar.offsetHeight || 54,
-      bottom: isPaginate ? (pagenav.offsetHeight || 48) : safeAreaInset('bottom')
+      bottom: wantNav ? (pagenav.offsetHeight || 48) : safeAreaInset('bottom')
     };
     body.innerHTML = `<iframe id="readerIframe" sandbox="allow-scripts" srcdoc="${escapeAttr(buildReaderDoc(entry, book, insets))}"></iframe>`;
   }
