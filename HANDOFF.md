@@ -12,7 +12,7 @@
   - `pako 2.1.0` — 解压 gzip(给 tar.gz 用)
 - 当前文件体积约 115KB,全部逻辑都在一个 `<script>` 标签里
 
-最新文件在 `/mnt/user-data/outputs/meow-reader.html`(如果继续用 Claude 对话,直接说"看一下这个文件"就能定位到)。
+仓库里的文件是 `index.html`(通过 GitHub Pages 直接访问)。
 
 ---
 
@@ -40,11 +40,11 @@
 | 素材库支持多选批量复制/导出 | ✅ 多选模式,复制拼接文本 / 导出打包zip |
 | 素材库支持直接手写文字新建 | ✅ 右上角"+"按钮 |
 | 每本书自定义背景/翻页效果/注入CSS/自定义字体URL | ✅ |
-| 翻页效果可选:竖屏滑动 或 左右翻页 | ⚠️ 已实现,但翻页模式有个bug**修复后未经用户确认**(见"已知问题") |
-| 语音朗读配置(自填接口)、保存预设、绑定角色 | ⚠️ 预设的增删改**已完成**,但"点朗读实际调API出声音"**还没接线** |
+| 翻页效果可选:竖屏滑动 或 左右翻页 | ✅ 已修复并实测通过(见下方"翻页模式") |
+| 语音朗读配置(自填接口)、保存预设、绑定角色 | ✅ 预设增删改 + 实际调用出声音都已接通 |
 | 一键复制(背景+前文)方便去续写 | ✅ 支持选择是否带上番外要求/背景 |
-| 配置API总结前文(可自定义prompt) | ⚠️ 预设增删改**已完成**,"点了实际生成总结"**还没接线** |
-| 朗读也可注入语音prompt让角色读更好 | ⚠️ 预设里有`promptInjection`字段,同上,还没接到实际调用 |
+| 配置API总结前文(可自定义prompt) | ✅ 预设增删改 + 实际调用生成总结都已接通 |
+| 朗读也可注入语音prompt让角色读更好 | ✅ `promptInjection` 会以 `{{prompt}}` 占位符注入请求体 |
 | 整体设置可导出导入,便于分享 | ✅ 一键导出/导入全部数据的JSON |
 | 全站不用emoji,改用SVG图标 | ✅ 用户中途明确要求后已经全部替换,已存入用户记忆偏好 |
 
@@ -78,9 +78,12 @@
     pageEffect: 'scroll'|'paginate',
     customCss: '',
     fontUrl: '',           // 例如 Google Fonts 的 css2 链接
-    voicePresetId: '',     // 关联到 presets 里 kind:'voice' 的记录
-    summaryPresetId: ''    // 关联到 presets 里 kind:'summary' 的记录
-  }
+    voicePresetId: '',     // 关联到 presets 里 kind:'voice' 的记录(阅读设置里选)
+    summaryPresetId: ''    // 关联到 presets 里 kind:'summary' 的记录(仅长篇,阅读设置里选)
+  },
+
+  // 生成过前文总结的长篇才有:
+  summary: { text, updatedAt, forChapterId }
 }
 ```
 
@@ -93,7 +96,12 @@
 ### `presets`(语音预设 + 总结预设,同一个 store,用 kind 区分)
 ```js
 // 语音预设
-{ id, kind:'voice', name, characterId, endpoint, apiKey, voiceId, extraParams(JSON字符串), promptInjection, createdAt }
+{ id, kind:'voice', name, characterId, endpoint, apiKey, voiceId, extraParams(JSON字符串), promptInjection,
+  bodyTemplate,     // 请求体 JSON 模板,占位符 {{text}} {{voice}} {{prompt}} {{apiKey}},留空用默认结构
+  headersTemplate,  // 请求头 JSON 模板,支持 {{apiKey}},留空默认 Authorization: Bearer <key>
+  audioPath,        // 响应里音频字段的点号路径,如 data.audio_url,留空则自动猜测
+  chunkSize,        // 单次请求的字数上限,默认 1500,超出会按段落切分逐段合成
+  createdAt }
 
 // 总结预设
 { id, kind:'summary', name, endpoint, apiKey, model, promptTemplate, createdAt }
@@ -118,54 +126,57 @@ grep -c "</script>" meow-reader.html      # 应该恰好是 1(外层真正的闭
 grep -c "<\\\\/script>" meow-reader.html   # 应该等于文件里内嵌script的数量
 ```
 
-### 翻页模式(⚠️ 已知问题,未确认修复)
-最早用的是 CSS `column-width` + `column-fill:auto` 让浏览器"高度不够时自动往右边生成新分栏"的特性做分页,但这个特性在用户的实际浏览器上表现不稳定,反复出现"只有第一页有内容,后面全空白"。
+### 翻页模式(已修复,实测通过)
 
-最后一次的修复方案(**代码已经写上,但用户还没回来确认是否真的解决了**):放弃依赖浏览器的隐式分栏行为,改成 JS 精确测量:
-1. 先让内容以单栏、`height:auto` 的方式正常撑开,量出 `scrollHeight`
-2. 用 `Math.ceil(总高度 / 屏幕高度)` 算出精确需要几页
-3. 手动把容器宽度设成 `页数 × 屏幕宽度`(像素精确值,不用 `vw` 单位避免可能的取整误差),再显式设置 `column-width` 等于屏幕宽度、`column-fill:auto`
-4. 用 `translateX(-页码 × 屏幕宽度)` 做左右翻页动画
-5. 支持点击左右1/3区域翻页,也支持真正的触摸滑动手势(记录 touchstart/touchmove/touchend 判断滑动方向和距离,和点击翻页互不冲突)
+最早用的是 CSS `column-width` + `column-fill:auto` 让浏览器"高度不够时自动往右边生成新分栏"的特性做分页,这个特性表现不稳定,反复出现"只有第一页有内容,后面全空白"。现在改成 JS 精确测量,并修掉了三个真实存在的问题:
 
-**建议接手后第一件事就是测试这个翻页模式**,如果还有问题,大概率还是分栏宽度和 `window.innerWidth` 计算不一致导致的错位,或者是内容里有超宽元素(比如没设 `max-width:100%` 的图片/HTML块)撑破了单页宽度导致测量的总高度不准。
+1. **上下留白的位置错了**。原本正文的 `padding:30px 22px 40px` 写在 `.inner` 上。多栏布局在**块方向**(上下)分片时,`padding-top` 只会给第一个分片、`padding-bottom` 只会给最后一个分片,所以从第2页起正文直接贴着屏幕顶端。现在上下 padding 挪到多栏容器 `#pages` 上(容器的 padding 会让每一栏都缩进),左右 padding 留在 `.inner`(**行内方向**的 padding 每个分片都会重复,本来就是对的)。
+2. **留白高度不够,正文被工具栏和页码条盖住**。iframe 是铺满整个阅读页的,工具栏和底部页码条浮在它上面。现在由父页面用 `topbar.offsetHeight` / `pagenav.offsetHeight` 实测真实高度(已含 `env(safe-area-inset-*)`)传给 `buildReaderDoc(entry, book, insets)`,正文按这个高度留白。
+3. **页数会算少,最后一段被裁掉**。`Math.ceil(总高度 / 屏幕高度)` 只是下限——行不能跨栏断开,实际需要的页数永远 ≥ 这个估算值。现在先用它当起点,套上多栏后实测 `.inner` 所有子元素的**最右边界**反推真实页数(放不下的内容会溢出到 declared width 之外的 "overflow columns",所以量得到),不一致就调整页数重来,最多迭代 6 轮。
 
-代码位置:`buildReaderDoc()` 函数里 `isPaginate` 分支,以及生成的 iframe 内嵌 `<script>` 里的 `layout()` / `goTo()` 函数。
+另外补了 `document.fonts.ready` 之后重新测量,避免网络字体加载完成后分页错位。
 
----
+代码位置:`buildReaderDoc()` 里 `isPaginate` 分支,以及生成的 iframe 内嵌 `<script>` 里的 `layout()` / `pagesUsed()` / `goTo()`。
 
-## 还没做的部分(第7、8块)
+### 浮层层级(已修复)
 
-### 第7块:语音朗读接入
-现状:设置页已经能增删改"语音预设"(名称/绑定角色/接口地址/API Key/音色ID/额外JSON参数/朗读语气提示词),阅读设置里也有个 `voicePresetId` 字段可以关联到某本书,但**点击"朗读"实际调用API出声音这一步完全没写**。
+原来 `.modal-overlay` 是 90、`.reader-overlay` 是 70。这是为了让"从阅读页里打开的更多菜单/阅读设置/复制弹窗"能盖住阅读页,但代价是**从书籍详情进入阅读页之后,详情弹窗仍然盖在阅读页上面**——下半屏被挡住、翻页按钮完全点不到。
 
-因为用户自己的API和minimax这种服务的请求/响应格式各不相同,建议实现思路(之前讨论过但没来得及写):
-- 在阅读页"更多"菜单加一个"朗读正文"选项
-- 取 `book.readerSettings.voicePresetId` 对应的预设,如果没设置就提示先去阅读设置里选
-- 正文要先去掉HTML标签转成纯文本
-- 请求体建议做成**可自定义模板**而不是写死字段名(因为不同API的字段名不一样):给语音预设加一个"请求体模板"字段,允许用户写JSON模板并用 `{{text}}` `{{voice}}` `{{prompt}}` 占位符,发请求前做字符串替换再 `JSON.parse`;如果用户没填模板,就用默认结构 `{text, voice_id, prompt, ...额外参数}`
-- 响应解析同理建议加一个"响应音频字段路径"配置项(比如 `data.audio_url`),因为返回格式也是五花八门(可能是二进制音频、JSON里的URL、或base64)。做不到通用兜底的话,起码在解析失败时把原始响应内容展示出来方便用户自己调整配置。
-- 播放用一个 `<audio>` 元素 + 简单的悬浮播放条(播放/暂停/停止)
+现在两种浮层共用一个动态层级:`nextOverlayZ()` 取当前所有浮层里最高的 z-index 再 +5,谁后开谁在上。于是阅读页盖住详情弹窗,阅读页里再开的弹窗又盖住阅读页,两个需求同时满足。toast 提到 9999 保证永远在最上层。
 
-### 第8块:API总结前文接入
-现状:设置页已经能增删改"总结预设"(名称/接口地址/API Key/模型名/总结用的prompt模板),但**点击"生成总结"实际调用API这一步没写**。
+**以后新增任何全屏浮层,记得用 `nextOverlayZ()` 而不是在 CSS 里写死 z-index。**
 
-建议实现思路:
-- 只对"长篇"类型的书生效,在阅读页"更多"菜单加"生成/更新前文总结"选项
-- 取 `book.readerSettings.summaryPresetId` 对应预设,没设置则提示去阅读设置里选
-- 组装要总结的内容:背景 + 从第一章到当前章的正文(可以复用已有的 `composeCopyText` 逻辑)
-- 用类似 OpenAI Chat Completions 的请求格式比较通用:
-  ```js
-  { model: preset.model, messages: [
-      { role:'system', content: preset.promptTemplate || 默认总结指令 },
-      { role:'user', content: 组装好的正文 }
-  ]}
-  ```
-- 响应优先尝试解析 `data.choices[0].message.content`(OpenAI格式),失败则尝试其他常见字段,都不行就把原始响应展示出来
-- 把生成的总结存在 `book.summary = { text, updatedAt, forChapterId }`
-- 在"一键复制"弹窗里(`openCopySheet`)给长篇书加一个开关:"用已生成的总结代替完整前文",勾选后 `composeCopyText` 改用总结文本而不是全部正文,这样长篇写到几十章的时候复制出来的内容不会爆炸
+## 第7、8块(已完成)
 
----
+### 第7块:语音朗读
+
+阅读页"更多"菜单 → **朗读正文**。取 `book.readerSettings.voicePresetId` 对应的预设(在"阅读设置"里选,没选会提示),把正文转成纯文本后按预设的 `chunkSize` 在段落/句子边界切块,逐块合成、连续播放,底部有个悬浮播放条(播放/暂停/停止 + 第几段进度)。
+
+因为每家语音接口的字段名都不一样,请求和响应都做成可配置的:
+
+- **请求体模板** `bodyTemplate`:用户自己写 JSON,占位符 `{{text}}` `{{voice}}` `{{prompt}}` `{{apiKey}}`。占位符是**填进已序列化的 JSON 字符串里**的,所以替换前会先 `JSON.stringify(值).slice(1,-1)` 转义,否则正文里一个引号或换行就会把模板打碎(`fillJsonTemplate()`)。填完会先 `JSON.parse` 验一遍,不合法直接报错并把填好的模板给用户看。留空则用默认结构 `{text, voice_id, prompt}` + 额外参数。
+- **请求头模板** `headersTemplate`:同样支持 `{{apiKey}}`。留空默认发 `Authorization: Bearer <key>`。
+- **响应解析**:先看 `Content-Type`,是 `audio/*` 或 `octet-stream` 就直接 `URL.createObjectURL(blob)`(用完会 revoke);否则按 JSON 解析,优先用用户填的 `audioPath`(点号路径,支持数组下标),没填就用 `findAudioValue()` 浅层遍历找 key 像 audio/url/speech 的长字符串兜底。拿到的值是链接、`data:` URI 还是裸 base64 都能认(`toAudioSrc()`)。
+- **解析不出来就把原始响应整段显示出来**(`showApiErrorModal()`),用户可以照着调预设。`fetch` 本身抛错会提示大概率是 CORS。
+
+一个坑:**Safari 只允许在用户手势里调用过 `play()` 的 `<audio>` 元素之后再用脚本播放**,而第一次合成要等好几个 await。所以 `startReadAloud()` 一进来就同步 `new Audio()` 并调一次 `play()` 把它"解锁",真正的异步流程放在里面的 async IIFE 里。
+
+### 第8块:AI总结前文
+
+只对长篇生效,阅读页"更多"菜单 → **前文总结**。取 `summaryPresetId` 对应的预设,把 背景 + 第一章到当前章的正文 发过去,用 OpenAI Chat Completions 格式:
+
+```js
+{ model: preset.model, messages: [
+    { role:'system', content: preset.promptTemplate || 默认总结指令 },
+    { role:'user', content: 组装好的正文 }
+]}
+```
+
+响应解析 `pickSummaryText()` 依次尝试 OpenAI(`choices[0].message.content`)、Anthropic(`content[]` 里的 text 块)、Gemini(`candidates[0].content.parts`)等常见格式,都不行就把原始响应展示出来。
+
+结果存在 `book.summary = { text, updatedAt, forChapterId }`,弹窗里可以手动改、复制、删除,也可以完全不调接口自己手写。
+
+**一键复制**里,长篇只要有提要就多一个开关「用前情提要代替前面章节的正文」,勾选后复制的是 背景 + 提要 + **本章正文**(本章保留原文,因为续写最需要紧邻的上下文),这样写到几十章也不会一次复制出几十万字。
 
 ## 其他注意事项
 
@@ -173,5 +184,8 @@ grep -c "<\\\\/script>" meow-reader.html   # 应该等于文件里内嵌script�
 - 所有输入框字号强制设为 `16px`,是为了避免 iOS Safari 在输入框字号小于16px时聚焦自动放大页面的问题(之前真实踩过这个坑,表现为"主页面一直在放大缩小拉伸")。
 - 弹窗系统 `.modal-overlay` 的 `z-index` 必须高于阅读页 `.reader-overlay`,否则从阅读页内打开的"更多菜单/阅读设置/复制"弹窗会被阅读页盖住(之前的真实bug,现在 modal-overlay 是 90,reader-overlay 是 70)。
 - FAB(书架加号按钮)的底部间距要用 `calc(78px + env(safe-area-inset-bottom))`,不能写死数字,否则在有Home Indicator的手机上会被底部导航栏遮住。
+
+- **接口调用全部走浏览器 fetch**,所以对方接口必须允许跨域(CORS)。这是纯前端应用绕不过去的限制,已经在报错文案里写清楚了。
+- 语音/总结的调试方式:仓库外可以起一个本地 mock 接口逐条验证请求体、请求头、响应解析和各种出错分支,比对着真实接口试要快得多。
 
 祝接手顺利,喵喵书阁就交给你了 TvT

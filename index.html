@@ -268,10 +268,32 @@ textarea{resize:vertical; min-height:80px; line-height:1.55;}
 }
 
 
+/* floating audio player */
+.audio-bar{
+  position:fixed; left:50%; transform:translateX(-50%) translateY(120%); bottom:calc(78px + env(safe-area-inset-bottom));
+  width:calc(100% - 28px); max-width:420px; z-index:9500;
+  display:flex; align-items:center; gap:10px; padding:9px 12px;
+  background:var(--surface); border:1px solid var(--border); border-radius:14px;
+  box-shadow:0 6px 24px rgba(0,0,0,.18); transition:transform .24s ease, opacity .24s ease; opacity:0;
+  /* Parked off-screen when idle it would still swallow taps over the bottom of
+     the page, so it only takes pointer events while actually shown. */
+  pointer-events:none;
+}
+.audio-bar.show{transform:translateX(-50%) translateY(0); opacity:1; pointer-events:auto;}
+.audio-bar .ab-glyph{color:var(--accent); flex-shrink:0; display:flex;}
+.audio-bar .ab-txt{flex:1; min-width:0;}
+.audio-bar .ab-t1{font-size:12.5px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.audio-bar .ab-t2{font-size:11px; color:var(--ink-faint); margin-top:2px;}
+.audio-bar button{
+  background:var(--surface-2); border:1px solid var(--border); border-radius:9px; width:32px; height:30px;
+  color:var(--ink); display:flex; align-items:center; justify-content:center; cursor:pointer; flex-shrink:0; padding:0;
+}
+.audio-bar button:disabled{opacity:.4;}
+
 /* misc */
 .toast{
   position:fixed; left:50%; bottom:100px; transform:translateX(-50%); background:var(--ink); color:var(--bg);
-  padding:9px 16px; border-radius:20px; font-size:12.5px; z-index:100; opacity:0; transition:opacity .25s ease, transform .25s ease;
+  padding:9px 16px; border-radius:20px; font-size:12.5px; z-index:9999; opacity:0; transition:opacity .25s ease, transform .25s ease;
   pointer-events:none;
 }
 .toast.show{opacity:1;}
@@ -438,7 +460,12 @@ const ICONS = {
   palette: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 2-.9 2-2 0-.5-.2-1-.5-1.3-.3-.4-.5-.8-.5-1.3 0-1.1.9-2 2-2h2.2c1.5 0 2.8-1.3 2.8-2.8C19 6.6 15.9 3 12 3z"/><circle cx="7.5" cy="10.5" r="1.1" fill="currentColor" stroke="none"/><circle cx="11" cy="7" r="1.1" fill="currentColor" stroke="none"/><circle cx="15.5" cy="8" r="1.1" fill="currentColor" stroke="none"/></svg>',
   scrollMode: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6h16M4 12h16M4 18h16"/></svg>',
   pageMode: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="4" width="8" height="16" rx="1.5"/><rect x="13" y="4" width="8" height="16" rx="1.5"/></svg>',
-  check: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12l5 5 9-9"/></svg>'
+  check: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12l5 5 9-9"/></svg>',
+  speaker: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 9v6h3.5L12 19V5L7.5 9H4z"/><path d="M16 9a4 4 0 0 1 0 6"/><path d="M18.5 6.5a7.5 7.5 0 0 1 0 11"/></svg>',
+  sparkle: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M18.5 15.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z"/></svg>',
+  play: '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M8 5.5v13l10-6.5z"/></svg>',
+  pause: '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><rect x="7" y="5.5" width="3.4" height="13" rx="1"/><rect x="13.6" y="5.5" width="3.4" height="13" rx="1"/></svg>',
+  stop: '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/></svg>'
 };
 
 /* ================= IndexedDB layer ================= */
@@ -578,10 +605,24 @@ function switchTab(tab){
 }
 
 /* ================= Modal helpers ================= */
+/* Overlays (modals + the fullscreen reader) share one stacking counter so that
+   whatever was opened last always sits on top: the reader must cover the book
+   detail sheet it was launched from, while sheets opened from inside the reader
+   must in turn cover the reader. */
+function nextOverlayZ(){
+  const root = document.getElementById('modalRoot');
+  let top = 65;
+  if(root) root.querySelectorAll('.modal-overlay, .reader-overlay').forEach(el=>{
+    const z = parseInt(el.style.zIndex, 10);
+    if(!isNaN(z) && z > top) top = z;
+  });
+  return top + 5;
+}
 function openModal(innerHtml, opts={}){
   const root = document.getElementById('modalRoot');
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
+  overlay.style.zIndex = nextOverlayZ();
   overlay.innerHTML = `<div class="modal-sheet">${innerHtml}</div>`;
   root.appendChild(overlay);
   requestAnimationFrame(()=>overlay.classList.add('open'));
@@ -1385,6 +1426,23 @@ async function openVoicePresetEditor(preset){
       <textarea id="vpExtra" style="min-height:60px;" placeholder='{"speed":1.0}'>${escapeHtml(preset?.extraParams||'')}</textarea>
       <label class="field-label">朗读提示词注入(可选)</label>
       <textarea id="vpPrompt" style="min-height:60px;" placeholder="给支持指令的语音接口的语气/情感提示,例如: 用温柔、略带雀跃的语气朗读">${escapeHtml(preset?.promptInjection||'')}</textarea>
+
+      <label class="field-label">请求体模板(可选,JSON)</label>
+      <textarea id="vpBody" style="min-height:90px;" placeholder='{"model":"speech-01","text":"{{text}}","voice_id":"{{voice}}"}'>${escapeHtml(preset?.bodyTemplate||'')}</textarea>
+      <div class="hint-text">不同语音接口的字段名都不一样,可以在这里自己写请求体。可用占位符:<b>{{text}}</b> 正文、<b>{{voice}}</b> 音色ID、<b>{{prompt}}</b> 朗读提示词、<b>{{apiKey}}</b> 密钥。留空则用默认结构 <code>{text, voice_id, prompt}</code> 加上面的额外参数。</div>
+
+      <label class="field-label">自定义请求头(可选,JSON)</label>
+      <textarea id="vpHeaders" style="min-height:60px;" placeholder='{"Authorization":"Bearer {{apiKey}}"}'>${escapeHtml(preset?.headersTemplate||'')}</textarea>
+      <div class="hint-text">留空则默认发送 <code>Authorization: Bearer 你的APIKey</code>。同样支持 {{apiKey}} 占位符。</div>
+
+      <label class="field-label">响应音频字段路径(可选)</label>
+      <input type="text" id="vpAudioPath" value="${escapeAttr(preset?.audioPath||'')}" placeholder="例如: data.audio_url">
+      <div class="hint-text">接口直接返回音频文件时不用填。返回 JSON 时填音频所在的字段路径(用点号分隔,支持 <code>data.items.0.url</code> 这种数组下标),值可以是链接、data URI 或 base64。留空会自动尝试几个常见字段。</div>
+
+      <label class="field-label">单次请求字数上限</label>
+      <input type="text" id="vpChunk" value="${escapeAttr(String(preset?.chunkSize||1500))}" placeholder="1500">
+      <div class="hint-text">整章正文通常会超过接口的长度限制,这里会按这个字数在段落处切分,一段一段合成并连续播放。</div>
+
       <div class="btn-row">
         <button class="btn primary block" id="saveVoicePresetBtn">保存</button>
       </div>
@@ -1403,6 +1461,10 @@ async function openVoicePresetEditor(preset){
       voiceId: overlay.querySelector('#vpVoiceId').value.trim(),
       extraParams: overlay.querySelector('#vpExtra').value.trim(),
       promptInjection: overlay.querySelector('#vpPrompt').value,
+      bodyTemplate: overlay.querySelector('#vpBody').value.trim(),
+      headersTemplate: overlay.querySelector('#vpHeaders').value.trim(),
+      audioPath: overlay.querySelector('#vpAudioPath').value.trim(),
+      chunkSize: Math.max(100, parseInt(overlay.querySelector('#vpChunk').value, 10) || 1500),
       createdAt: preset?.createdAt || Date.now()
     };
     await dbPut('presets', record);
@@ -1465,6 +1527,447 @@ async function openSummaryPresetEditor(preset){
       closeModal(overlay);
       showToast('已删除');
       await refreshSummaryPresets();
+    });
+  }
+}
+
+/* ================= API plumbing (voice + summary) =================
+   Both features talk to endpoints the user supplies themselves, so nothing
+   about the request or response shape can be assumed. Everything is driven by
+   templates and configurable field paths, and whenever parsing fails the raw
+   response is shown so the user can adjust their preset. */
+
+class ApiError extends Error{
+  constructor(message, raw){ super(message); this.raw = raw || ''; }
+}
+
+function getByPath(obj, path){
+  if(!path) return undefined;
+  return path.split('.').reduce((acc, key)=>{
+    if(acc === null || acc === undefined) return undefined;
+    return acc[key];
+  }, obj);
+}
+function fillTemplate(str, vars){
+  return String(str).replace(/\{\{\s*(\w+)\s*\}\}/g, (m, key)=>{
+    return Object.prototype.hasOwnProperty.call(vars, key) ? vars[key] : m;
+  });
+}
+/* Placeholders are substituted inside an already-serialised JSON string, so the
+   values have to be escaped as JSON string bodies or a quote in the text would
+   break the template. */
+function fillJsonTemplate(tpl, vars){
+  const escaped = {};
+  Object.keys(vars).forEach(k=>{
+    escaped[k] = JSON.stringify(String(vars[k] ?? '')).slice(1, -1);
+  });
+  return fillTemplate(tpl, escaped);
+}
+
+function plainTextFromContent(raw){
+  if(!raw) return '';
+  const blocks = raw.split(/\n\s*\n/);
+  const out = [];
+  blocks.forEach(block=>{
+    const trimmed = block.trim();
+    if(!trimmed) return;
+    if(/^</.test(trimmed)){
+      // Embedded HTML widgets: keep only the words a listener would hear.
+      // DOMParser builds an inert document, so nothing is fetched or run.
+      const doc = new DOMParser().parseFromString(trimmed, 'text/html');
+      doc.querySelectorAll('script,style').forEach(el=>el.remove());
+      const txt = (doc.body.textContent||'').replace(/\s+/g,' ').trim();
+      if(txt) out.push(txt);
+    }else{
+      out.push(trimmed);
+    }
+  });
+  return out.join('\n\n');
+}
+
+/* Split on paragraph boundaries first, then sentences, so each request lands on
+   a natural pause instead of cutting a word in half. */
+function chunkText(text, size){
+  const limit = Math.max(100, size||1500);
+  const chunks = [];
+  let buf = '';
+  const push = ()=>{ if(buf.trim()) chunks.push(buf.trim()); buf = ''; };
+  const addPiece = (piece)=>{
+    if(piece.length > limit){
+      const sentences = piece.split(/(?<=[。！？!?…;；\n])/);
+      sentences.forEach(sen=>{
+        if(sen.length > limit){
+          for(let i=0;i<sen.length;i+=limit){
+            if(buf) push();
+            chunks.push(sen.slice(i, i+limit));
+          }
+          return;
+        }
+        if((buf + sen).length > limit) push();
+        buf += sen;
+      });
+      return;
+    }
+    if((buf + '\n\n' + piece).length > limit) push();
+    buf = buf ? (buf + '\n\n' + piece) : piece;
+  };
+  text.split(/\n\s*\n/).forEach(par=>{ if(par.trim()) addPiece(par.trim()); });
+  push();
+  return chunks.length ? chunks : [text];
+}
+
+function buildPresetHeaders(preset){
+  const headers = { 'Content-Type': 'application/json' };
+  if(preset.headersTemplate){
+    try{
+      const custom = JSON.parse(fillJsonTemplate(preset.headersTemplate, { apiKey: preset.apiKey||'' }));
+      Object.keys(custom).forEach(k=>{ headers[k] = String(custom[k]); });
+      return headers;
+    }catch(e){
+      throw new ApiError('自定义请求头不是合法的 JSON,请检查预设设置');
+    }
+  }
+  if(preset.apiKey) headers['Authorization'] = 'Bearer ' + preset.apiKey;
+  return headers;
+}
+
+function buildVoiceBody(preset, text){
+  const vars = { text, voice: preset.voiceId||'', prompt: preset.promptInjection||'', apiKey: preset.apiKey||'' };
+  if(preset.bodyTemplate){
+    const filled = fillJsonTemplate(preset.bodyTemplate, vars);
+    try{ JSON.parse(filled); }
+    catch(e){ throw new ApiError('请求体模板填入正文后不是合法的 JSON,请检查模板', filled.slice(0, 2000)); }
+    return filled;
+  }
+  const body = { text, voice_id: preset.voiceId||'' };
+  if(preset.promptInjection) body.prompt = preset.promptInjection;
+  if(preset.extraParams){
+    try{ Object.assign(body, JSON.parse(preset.extraParams)); }
+    catch(e){ throw new ApiError('额外参数不是合法的 JSON,请检查预设设置'); }
+  }
+  return JSON.stringify(body);
+}
+
+const AUDIO_KEY_HINT = /(audio|voice|speech|sound|mp3|wav|url|link|file|data)/i;
+/* Fall back to a shallow walk for the very common case of the audio sitting
+   under some vendor-specific key the user has not configured a path for. */
+function findAudioValue(node, depth){
+  if(depth > 5 || node === null || typeof node !== 'object') return '';
+  if(Array.isArray(node)){
+    for(const item of node){
+      const hit = findAudioValue(item, depth+1);
+      if(hit) return hit;
+    }
+    return '';
+  }
+  for(const key of Object.keys(node)){
+    const val = node[key];
+    if(typeof val === 'string' && val.length > 16 && AUDIO_KEY_HINT.test(key)) return val;
+  }
+  for(const key of Object.keys(node)){
+    const hit = findAudioValue(node[key], depth+1);
+    if(hit) return hit;
+  }
+  return '';
+}
+function toAudioSrc(val){
+  const v = String(val).trim();
+  if(/^data:/i.test(v)) return v;
+  if(/^https?:\/\//i.test(v)) return v;
+  if(/^\/\//.test(v)) return 'https:' + v;
+  return 'data:audio/mpeg;base64,' + v.replace(/^base64,/, '').replace(/\s+/g, '');
+}
+
+async function synthesizeChunk(preset, text){
+  const headers = buildPresetHeaders(preset);
+  const body = buildVoiceBody(preset, text);
+  let res;
+  try{
+    res = await fetch(preset.endpoint, { method:'POST', headers, body });
+  }catch(e){
+    throw new ApiError('请求发不出去,通常是接口不允许网页跨域访问(CORS),或者地址填错了。');
+  }
+  const ct = (res.headers.get('content-type')||'').toLowerCase();
+  const isAudio = ct.startsWith('audio/') || ct.includes('octet-stream') || ct.includes('mpeg');
+  if(res.ok && isAudio){
+    const blob = await res.blob();
+    return { src: URL.createObjectURL(blob), revoke: true };
+  }
+  const raw = await res.text();
+  if(!res.ok) throw new ApiError('接口返回错误状态 ' + res.status, raw);
+  let json;
+  try{ json = JSON.parse(raw); }
+  catch(e){
+    const t = raw.trim();
+    if(/^(https?:\/\/|data:)/i.test(t)) return { src: toAudioSrc(t), revoke: false };
+    throw new ApiError('响应既不是音频也不是 JSON', raw);
+  }
+  let val = preset.audioPath ? getByPath(json, preset.audioPath) : '';
+  if(!val) val = findAudioValue(json, 0);
+  if(!val || typeof val !== 'string'){
+    throw new ApiError(preset.audioPath ? ('响应里找不到字段 ' + preset.audioPath) : '没能自动认出响应里的音频字段,请在预设里填写"响应音频字段路径"', raw);
+  }
+  return { src: toAudioSrc(val), revoke: false };
+}
+
+/* ---------- floating player ---------- */
+let ttsSession = null;
+function ensureAudioBar(){
+  let bar = document.getElementById('audioBar');
+  if(bar) return bar;
+  bar = document.createElement('div');
+  bar.id = 'audioBar';
+  bar.className = 'audio-bar';
+  bar.innerHTML = `
+    <div class="ab-glyph">${ICONS.speaker}</div>
+    <div class="ab-txt"><div class="ab-t1" id="abTitle"></div><div class="ab-t2" id="abStatus"></div></div>
+    <button id="abToggle" title="播放/暂停">${ICONS.pause}</button>
+    <button id="abStop" title="停止">${ICONS.stop}</button>
+  `;
+  document.body.appendChild(bar);
+  bar.querySelector('#abStop').addEventListener('click', stopReadAloud);
+  bar.querySelector('#abToggle').addEventListener('click', ()=>{
+    if(!ttsSession || !ttsSession.audio) return;
+    if(ttsSession.audio.paused) ttsSession.audio.play().catch(()=>{});
+    else ttsSession.audio.pause();
+    paintAudioBar();
+  });
+  return bar;
+}
+function paintAudioBar(){
+  const bar = document.getElementById('audioBar');
+  if(!bar || !ttsSession) return;
+  const s = ttsSession;
+  bar.querySelector('#abTitle').textContent = s.title || '朗读中';
+  const pos = (s.index+1) + '/' + s.chunks.length + ' 段';
+  const label = s.status === 'loading' ? ('正在合成 ' + pos)
+    : s.status === 'done' ? '朗读完毕'
+    : (s.audio && s.audio.paused) ? ('已暂停 · ' + pos)
+    : ('朗读中 · ' + pos);
+  bar.querySelector('#abStatus').textContent = label;
+  const toggle = bar.querySelector('#abToggle');
+  toggle.innerHTML = (s.audio && !s.audio.paused) ? ICONS.pause : ICONS.play;
+  toggle.disabled = s.status === 'loading' || s.status === 'done';
+}
+function stopReadAloud(){
+  const s = ttsSession;
+  ttsSession = null;
+  if(s){
+    s.cancelled = true;
+    if(s.audio){ try{ s.audio.pause(); }catch(e){} s.audio.removeAttribute('src'); }
+    s.objectUrls.forEach(u=>{ try{ URL.revokeObjectURL(u); }catch(e){} });
+  }
+  const bar = document.getElementById('audioBar');
+  if(bar) bar.classList.remove('show');
+}
+async function playTtsChunk(session, i){
+  if(session.cancelled || ttsSession !== session) return;
+  if(i >= session.chunks.length){
+    session.status = 'done';
+    paintAudioBar();
+    setTimeout(()=>{ if(ttsSession === session) stopReadAloud(); }, 1800);
+    return;
+  }
+  session.index = i;
+  session.status = 'loading';
+  paintAudioBar();
+  try{
+    const { src, revoke } = await synthesizeChunk(session.preset, session.chunks[i]);
+    if(session.cancelled || ttsSession !== session){
+      if(revoke) URL.revokeObjectURL(src);
+      return;
+    }
+    if(revoke) session.objectUrls.push(src);
+    session.audio.src = src;
+    session.status = 'playing';
+    try{ await session.audio.play(); }
+    catch(e){ throw new ApiError('浏览器拒绝自动播放,请再点一次朗读'); }
+    paintAudioBar();
+  }catch(err){
+    if(session.cancelled || ttsSession !== session) return;
+    stopReadAloud();
+    showApiErrorModal('朗读失败', err);
+  }
+}
+function startReadAloud(book, entry){
+  const audio = new Audio();
+  audio.preload = 'auto';
+  /* Safari only unlocks an <audio> element for later programmatic playback if
+     play() was called on it during the user gesture, and the first synthesis
+     request happens after several awaits — so prime it here, synchronously. */
+  try{ const pr = audio.play(); if(pr && pr.catch) pr.catch(()=>{}); }catch(e){}
+  return (async ()=>{
+    const rs = book.readerSettings || {};
+    const preset = rs.voicePresetId ? await dbGet('presets', rs.voicePresetId) : null;
+    if(!preset || preset.kind !== 'voice'){ showToast('请先在阅读设置里选一个语音预设'); return; }
+    if(!preset.endpoint){ showToast('这个语音预设还没有填接口地址'); return; }
+    const text = plainTextFromContent(entry.content || '');
+    if(!text){ showToast('这条内容没有可朗读的正文'); return; }
+    stopReadAloud();
+    const session = {
+      cancelled:false, preset, audio, objectUrls:[], index:0, status:'loading',
+      title: entry.title, chunks: chunkText(text, preset.chunkSize)
+    };
+    ttsSession = session;
+    audio.addEventListener('ended', ()=>{ if(ttsSession === session) playTtsChunk(session, session.index + 1); });
+    audio.addEventListener('play', paintAudioBar);
+    audio.addEventListener('pause', paintAudioBar);
+    ensureAudioBar().classList.add('show');
+    paintAudioBar();
+    await playTtsChunk(session, 0);
+  })();
+}
+
+/* ---------- summary ---------- */
+const DEFAULT_SUMMARY_PROMPT = '你是一个小说编辑助手。请把用户给出的正文压缩成一份"前情提要",保留关键人物关系、已经发生的重要事件、当前所处的情境,以及尚未解决的悬念和伏笔。用中文叙述,不要分析和评论,直接输出提要正文。';
+
+function pickSummaryText(j){
+  const candidates = [
+    ()=>j.choices[0].message.content,
+    ()=>j.choices[0].delta.content,
+    ()=>j.choices[0].text,
+    ()=>j.content.filter(b=>b && b.type === 'text').map(b=>b.text).join(''),
+    ()=>j.content[0].text,
+    ()=>j.data.choices[0].message.content,
+    ()=>j.candidates[0].content.parts.map(p=>p.text).join(''),
+    ()=>j.output_text,
+    ()=>j.message.content,
+    ()=>j.result,
+    ()=>j.response,
+    ()=>j.text
+  ];
+  for(const fn of candidates){
+    try{
+      const v = fn();
+      if(typeof v === 'string' && v.trim()) return v.trim();
+    }catch(e){}
+  }
+  return '';
+}
+async function callSummaryApi(preset, content){
+  const headers = buildPresetHeaders(preset);
+  const body = JSON.stringify({
+    model: preset.model || 'gpt-4o-mini',
+    messages: [
+      { role:'system', content: preset.promptTemplate || DEFAULT_SUMMARY_PROMPT },
+      { role:'user', content }
+    ]
+  });
+  let res;
+  try{
+    res = await fetch(preset.endpoint, { method:'POST', headers, body });
+  }catch(e){
+    throw new ApiError('请求发不出去,通常是接口不允许网页跨域访问(CORS),或者地址填错了。');
+  }
+  const raw = await res.text();
+  if(!res.ok) throw new ApiError('接口返回错误状态 ' + res.status, raw);
+  let json;
+  try{ json = JSON.parse(raw); }
+  catch(e){
+    if(raw.trim()) return raw.trim();
+    throw new ApiError('响应不是 JSON', raw);
+  }
+  const text = pickSummaryText(json);
+  if(!text) throw new ApiError('没能在响应里找到总结文本', raw);
+  return text;
+}
+/* Everything from the background up to and including the chapter being read —
+   the same span the copy sheet uses, so the summary can stand in for it. */
+function composeSummarySource(book, entry){
+  const parts = [];
+  if(book.background) parts.push('【背景设定】\n' + book.background.trim());
+  const chapters = (book.chapters||[]).slice().sort((a,b)=>a.order-b.order);
+  const idx = chapters.findIndex(c=>c.id === entry.id);
+  const upTo = idx >= 0 ? chapters.slice(0, idx+1) : chapters;
+  upTo.forEach(c=> parts.push('【'+c.title+'】\n' + plainTextFromContent(c.content||'')));
+  return parts.join('\n\n');
+}
+function showApiErrorModal(title, err){
+  const raw = (err && err.raw) ? String(err.raw).slice(0, 4000) : '';
+  const overlay = openModal(`
+    <div class="modal-header"><h2>${escapeHtml(title)}</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+    <div class="modal-body">
+      <div class="hint-text" style="color:var(--danger); font-size:13px; margin-bottom:10px;">${escapeHtml((err && err.message) || String(err))}</div>
+      ${raw ? `
+        <label class="field-label">接口原始响应</label>
+        <textarea readonly style="min-height:180px; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px;">${escapeHtml(raw)}</textarea>
+        <div class="hint-text">对照上面的响应,回到 设置 → 语音/总结预设 里调整字段路径或请求体模板。</div>
+      ` : ''}
+    </div>
+  `);
+  overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
+}
+async function openSummarySheet(book, entry){
+  const rs = book.readerSettings || {};
+  const preset = rs.summaryPresetId ? await dbGet('presets', rs.summaryPresetId) : null;
+  const existing = book.summary || null;
+  const chapters = (book.chapters||[]).slice().sort((a,b)=>a.order-b.order);
+  const forTitle = existing ? (chapters.find(c=>c.id === existing.forChapterId)||{}).title : '';
+  const overlay = openModal(`
+    <div class="modal-header"><h2>前文总结</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+    <div class="modal-body">
+      ${!preset ? `<div class="hint-text" style="margin-bottom:12px;">还没有选总结预设,先去"阅读设置"里选一个,或者手动写下面的提要。</div>`
+        : `<div class="hint-text" style="margin-bottom:12px;">将把 背景 + 第一章到《${escapeHtml(entry.title)}》的正文发给「${escapeHtml(preset.name)}」生成提要。</div>`}
+      ${existing ? `<div class="hint-text" style="margin-bottom:8px;">当前提要生成于 ${new Date(existing.updatedAt).toLocaleString()}${forTitle?(' · 截至《'+escapeHtml(forTitle)+'》'):''}</div>` : ''}
+      <textarea id="summaryText" style="min-height:200px;" placeholder="点下面的按钮生成,也可以自己手写">${escapeHtml(existing?existing.text:'')}</textarea>
+      <div class="btn-row">
+        <button class="btn primary block" id="genSummaryBtn" ${preset?'':'disabled'}>${existing?'重新生成':'生成提要'}</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn sm" id="saveSummaryBtn">保存</button>
+        <button class="btn sm" id="copySummaryBtn">复制</button>
+        ${existing ? `<button class="btn sm danger" id="clearSummaryBtn">删除提要</button>` : ''}
+      </div>
+    </div>
+  `);
+  overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
+  const ta = overlay.querySelector('#summaryText');
+  const genBtn = overlay.querySelector('#genSummaryBtn');
+
+  async function persist(text){
+    if(text){
+      book.summary = { text, updatedAt: Date.now(), forChapterId: entry.id };
+    }else{
+      delete book.summary;
+    }
+    book.updatedAt = Date.now();
+    await dbPut('books', book);
+  }
+
+  genBtn.addEventListener('click', async ()=>{
+    if(!preset) return;
+    if(!preset.endpoint){ showToast('这个总结预设还没有填接口地址'); return; }
+    genBtn.disabled = true;
+    genBtn.textContent = '生成中…';
+    try{
+      const text = await callSummaryApi(preset, composeSummarySource(book, entry));
+      ta.value = text;
+      await persist(text);
+      showToast('提要已生成并保存');
+    }catch(err){
+      showApiErrorModal('生成总结失败', err);
+    }finally{
+      genBtn.disabled = false;
+      genBtn.textContent = '重新生成';
+    }
+  });
+  overlay.querySelector('#saveSummaryBtn').addEventListener('click', async ()=>{
+    await persist(ta.value.trim());
+    closeModal(overlay);
+    showToast('已保存');
+  });
+  overlay.querySelector('#copySummaryBtn').addEventListener('click', async ()=>{
+    if(!ta.value.trim()){ showToast('提要还是空的'); return; }
+    await doCopyText(ta.value.trim());
+    showToast('已复制');
+  });
+  const clearBtn = overlay.querySelector('#clearSummaryBtn');
+  if(clearBtn){
+    clearBtn.addEventListener('click', async ()=>{
+      if(!confirm('删除已保存的前文提要?')) return;
+      await persist('');
+      closeModal(overlay);
+      showToast('已删除');
     });
   }
 }
@@ -1748,7 +2251,15 @@ function parseFontFamily(url){
     return decodeURIComponent(m[1]).split(':')[0].split(',')[0].replace(/\+/g,' ').trim();
   }catch(e){ return ''; }
 }
-function buildReaderDoc(entry, book){
+function safeAreaInset(side){
+  const probe = document.createElement('div');
+  probe.style.cssText = `position:fixed; left:0; bottom:0; width:0; pointer-events:none; visibility:hidden; height:env(safe-area-inset-${side},0px);`;
+  document.body.appendChild(probe);
+  const h = probe.offsetHeight || 0;
+  probe.remove();
+  return h;
+}
+function buildReaderDoc(entry, book, insets){
   const t = currentThemeVars();
   const rs = book.readerSettings || {};
   const promptBlock = (book.type==='extra' && entry.prompt) ?
@@ -1758,6 +2269,16 @@ function buildReaderDoc(entry, book){
   const fontFamily = rs.fontUrl ? parseFontFamily(rs.fontUrl) : '';
   const fontLink = rs.fontUrl ? `<link rel="stylesheet" href="${rs.fontUrl}">` : '';
   const isPaginate = rs.pageEffect === 'paginate';
+
+  /* The reader chrome (topbar / page nav) floats above the iframe, so the
+     document has to reserve room for it or the first and last lines end up
+     hidden underneath. The vertical padding lives on #pages rather than on
+     .inner because multicol splits block-direction padding between the first
+     and last fragment only — putting it on the multicol container instead
+     gives every page the same top and bottom margin. Inline-direction padding
+     does repeat per fragment, so that stays on .inner. */
+  const padTop = Math.max(20, (insets && insets.top) || 0) + 16;
+  const padBottom = Math.max(20, (insets && insets.bottom) || 0) + 16;
 
   const baseCss = `
     *{box-sizing:border-box;}
@@ -1775,7 +2296,9 @@ function buildReaderDoc(entry, book){
       padding:12px 14px; margin:0 0 28px; line-height:1.7;
     }
     a{color:${t.accent};}
-    #pages .inner{ padding:30px 22px 40px; }
+    #pages{ padding:${padTop}px 0 ${padBottom}px; }
+    #pages .inner{ padding:0 22px; }
+    #pages .inner > *{ max-width:100%; }
     ${isPaginate ? `
       html,body{ overflow:hidden; }
       #pages{ overflow:hidden; transition:transform .28s ease; touch-action:pan-y; }
@@ -1785,9 +2308,31 @@ function buildReaderDoc(entry, book){
   const script = isPaginate ? `
   <script>
   (function(){
-    var pageIndex = 0, totalPages = 1, pagesEl;
+    var pageIndex = 0, totalPages = 1, pagesEl, innerEl;
+    var PAD_TOP = ${padTop}, PAD_BOTTOM = ${padBottom};
     var touchStartX=null, touchStartY=null, moved=false;
 
+    function applyColumns(vw, vh, n){
+      pagesEl.style.width = (n*vw) + 'px';
+      pagesEl.style.height = vh + 'px';
+      pagesEl.style.columnWidth = vw + 'px';
+      pagesEl.style.columnGap = '0px';
+      pagesEl.style.columnFill = 'auto';
+    }
+    // Content that does not fit spills into "overflow columns" past the
+    // declared width, so the furthest right edge of any child tells us how
+    // many pages the text really needs — which is always >= the naive
+    // height/viewport estimate, because lines cannot be split across columns.
+    function pagesUsed(vw){
+      var els = innerEl.children, n = 1;
+      for(var i=0;i<els.length;i++){
+        var r = els[i].getBoundingClientRect();
+        if(!r.width && !r.height) continue;
+        var c = Math.ceil((r.right - 0.5) / vw);
+        if(c > n) n = c;
+      }
+      return n;
+    }
     function layout(){
       var vw = window.innerWidth, vh = window.innerHeight;
       pagesEl.style.transition = 'none';
@@ -1797,14 +2342,18 @@ function buildReaderDoc(entry, book){
       pagesEl.style.columnFill = '';
       pagesEl.style.height = 'auto';
       pagesEl.style.width = vw + 'px';
-      var fullHeight = pagesEl.scrollHeight;
-      totalPages = Math.max(1, Math.ceil(fullHeight / vh));
-      pagesEl.style.width = (totalPages*vw) + 'px';
-      pagesEl.style.height = vh + 'px';
-      pagesEl.style.columnWidth = vw + 'px';
-      pagesEl.style.columnGap = '0px';
-      pagesEl.style.columnFill = 'auto';
+
+      var pageH = Math.max(60, vh - PAD_TOP - PAD_BOTTOM);
+      var guess = Math.max(1, Math.ceil(innerEl.offsetHeight / pageH));
+      totalPages = guess;
+      for(var pass=0; pass<6; pass++){
+        applyColumns(vw, vh, totalPages);
+        var needed = pagesUsed(vw);
+        if(needed === totalPages) break;
+        totalPages = Math.max(1, needed);
+      }
       if(pageIndex > totalPages-1) pageIndex = totalPages-1;
+      if(pageIndex < 0) pageIndex = 0;
       requestAnimationFrame(function(){
         pagesEl.style.transition = 'transform .28s ease';
         applyTransform();
@@ -1819,13 +2368,25 @@ function buildReaderDoc(entry, book){
       pageIndex = i;
       applyTransform();
     }
-    document.addEventListener('DOMContentLoaded', function(){ pagesEl = document.getElementById('pages'); layout(); });
-    window.addEventListener('load', function(){ if(pagesEl) layout(); });
+    function boot(){
+      if(pagesEl) return;
+      pagesEl = document.getElementById('pages');
+      innerEl = pagesEl.querySelector('.inner');
+      layout();
+    }
+    document.addEventListener('DOMContentLoaded', boot);
+    // Webfonts and images change the content height after DOMContentLoaded,
+    // so re-measure once everything has actually loaded.
+    window.addEventListener('load', function(){ boot(); layout(); });
+    if(document.fonts && document.fonts.ready){
+      document.fonts.ready.then(function(){ if(pagesEl) layout(); });
+    }
     window.addEventListener('resize', function(){ if(pagesEl) layout(); });
     window.addEventListener('message', function(e){
       if(!e.data) return;
       if(e.data.mmGoPrev) goTo(pageIndex-1);
       if(e.data.mmGoNext) goTo(pageIndex+1);
+      if(e.data.mmRelayout && pagesEl) layout();
     });
     document.addEventListener('touchstart', function(e){
       var tch = e.touches[0];
@@ -1879,7 +2440,7 @@ async function doCopyText(text){
   try{ document.execCommand('copy'); }catch(e2){}
   document.body.removeChild(ta);
 }
-function composeCopyText(book, entry, includeExtra){
+function composeCopyText(book, entry, includeExtra, useSummary){
   if(book.type === 'extra'){
     const parts = [];
     if(includeExtra && entry.prompt) parts.push('【番外要求】\n' + entry.prompt.trim());
@@ -1890,6 +2451,14 @@ function composeCopyText(book, entry, includeExtra){
   if(includeExtra && book.background) parts.push('【背景设定】\n' + book.background.trim());
   const chapters = (book.chapters||[]).slice().sort((a,b)=>a.order-b.order);
   const idx = chapters.findIndex(c=>c.id===entry.id);
+  // With a generated recap, earlier chapters collapse into the recap and only
+  // the chapter being read is carried over verbatim — otherwise a long novel
+  // produces a copy far too big to paste anywhere.
+  if(useSummary && book.summary && book.summary.text){
+    parts.push('【前情提要】\n' + book.summary.text.trim());
+    if(idx >= 0) parts.push('【'+entry.title+'】\n'+(entry.content||''));
+    return parts.join('\n\n');
+  }
   const upTo = idx>=0 ? chapters.slice(0, idx+1) : chapters;
   upTo.forEach(c=> parts.push('【'+c.title+'】\n'+(c.content||'')));
   return parts.join('\n\n');
@@ -1897,11 +2466,19 @@ function composeCopyText(book, entry, includeExtra){
 function openCopySheet(book, entry){
   const isExtra = book.type === 'extra';
   const hasExtra = isExtra ? !!entry.prompt : !!book.background;
+  const hasSummary = !isExtra && !!(book.summary && book.summary.text);
   const label = isExtra ? '包含番外要求' : '包含背景设定';
   const overlay = openModal(`
     <div class="modal-header"><h2>一键复制</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
     <div class="modal-body">
       ${!isExtra ? `<div class="hint-text" style="margin-bottom:12px;">将复制背景 + 从第一章到本章为止的正文,方便去续写下一章。</div>` : ''}
+      ${hasSummary ? `
+        <label style="display:flex; align-items:center; gap:8px; font-size:13px; margin:4px 0 4px;">
+          <input type="checkbox" id="useSummaryChk" style="width:16px; height:16px;">
+          用前情提要代替前面章节的正文
+        </label>
+        <div class="hint-text" style="margin-bottom:14px;">勾选后只复制 提要 + 本章正文,章节多了之后不会一次复制出几十万字。</div>
+      ` : ''}
       ${hasExtra ? `
         <label style="display:flex; align-items:center; gap:8px; font-size:13px; margin:4px 0 16px;">
           <input type="checkbox" id="includeExtraChk" checked style="width:16px; height:16px;">
@@ -1914,7 +2491,8 @@ function openCopySheet(book, entry){
   overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
   overlay.querySelector('#doCopyBtn').addEventListener('click', async ()=>{
     const chk = overlay.querySelector('#includeExtraChk');
-    const text = composeCopyText(book, entry, chk ? chk.checked : false);
+    const sumChk = overlay.querySelector('#useSummaryChk');
+    const text = composeCopyText(book, entry, chk ? chk.checked : false, sumChk ? sumChk.checked : false);
     await doCopyText(text);
     closeModal(overlay);
     showToast('已复制');
@@ -1922,8 +2500,11 @@ function openCopySheet(book, entry){
 }
 
 /* ================= Reader appearance settings ================= */
-function openReaderSettingsSheet(book, onSaved){
+async function openReaderSettingsSheet(book, onSaved){
   const rs = book.readerSettings || (book.readerSettings = { background:'', pageEffect:'scroll', customCss:'', fontUrl:'' });
+  const [voicePresets, summaryPresets] = await Promise.all([getPresetsByKind('voice'), getPresetsByKind('summary')]);
+  const presetOptions = (list, selected)=> `<option value="">不使用</option>` + list.map(pr=>
+    `<option value="${pr.id}" ${selected===pr.id?'selected':''}>${escapeHtml(pr.name)}</option>`).join('');
   const presets = [
     {name:'跟随主题', value:''},
     {name:'米白', value:'#F3ECDF'},
@@ -1946,6 +2527,17 @@ function openReaderSettingsSheet(book, onSaved){
       <input type="text" id="fontUrlInput" placeholder="https://fonts.googleapis.com/css2?family=..." value="${escapeAttr(rs.fontUrl||'')}">
       <label class="field-label">注入自定义 CSS(可选)</label>
       <textarea id="customCssInputR" style="min-height:90px;" placeholder="例如: body{ letter-spacing:.5px; }">${escapeHtml(rs.customCss||'')}</textarea>
+
+      <label class="field-label">朗读语音预设</label>
+      <select id="voicePresetSelect">${presetOptions(voicePresets, rs.voicePresetId||'')}</select>
+      ${voicePresets.length ? '' : `<div class="hint-text">还没有语音预设,去 设置 → 语音朗读 里新建一个。</div>`}
+
+      ${book.type === 'novel' ? `
+        <label class="field-label">前文总结预设</label>
+        <select id="summaryPresetSelect">${presetOptions(summaryPresets, rs.summaryPresetId||'')}</select>
+        ${summaryPresets.length ? '' : `<div class="hint-text">还没有总结预设,去 设置 → AI总结前文 里新建一个。</div>`}
+      ` : ''}
+
       <div class="btn-row"><button class="btn primary block" id="saveReaderSettingsBtn">保存</button></div>
     </div>
   `);
@@ -1986,8 +2578,8 @@ function openReaderSettingsSheet(book, onSaved){
       pageEffect: chosenEffect,
       customCss: overlay.querySelector('#customCssInputR').value,
       fontUrl: overlay.querySelector('#fontUrlInput').value.trim(),
-      voicePresetId: rs.voicePresetId || '',
-      summaryPresetId: rs.summaryPresetId || ''
+      voicePresetId: (overlay.querySelector('#voicePresetSelect')||{}).value || '',
+      summaryPresetId: (overlay.querySelector('#summaryPresetSelect')||{}).value || (book.type==='novel' ? '' : (rs.summaryPresetId||''))
     };
     book.updatedAt = Date.now();
     await dbPut('books', book);
@@ -2006,6 +2598,7 @@ function openReaderPage(parentOverlay, book, entryId){
   const root = document.getElementById('modalRoot');
   const reader = document.createElement('div');
   reader.className = 'reader-overlay';
+  reader.style.zIndex = nextOverlayZ();
   reader.innerHTML = `
     <div class="reader-topbar" id="readerTopbar">
       <button class="icon-btn" data-r-back>${ICONS.back}</button>
@@ -2058,10 +2651,16 @@ function openReaderPage(parentOverlay, book, entryId){
   function paintRendered(){
     setCollapsed(false);
     const body = reader.querySelector('#readerBody');
-    body.innerHTML = `<iframe id="readerIframe" sandbox="allow-scripts" srcdoc="${escapeAttr(buildReaderDoc(entry, book))}"></iframe>`;
     const isPaginate = (book.readerSettings||{}).pageEffect === 'paginate';
     pagenav.style.display = isPaginate ? 'flex' : 'none';
     pagenav.classList.remove('collapsed');
+    // The iframe fills the whole overlay and the chrome floats on top of it,
+    // so measure the chrome now and let the document reserve that much room.
+    const insets = {
+      top: topbar.offsetHeight || 54,
+      bottom: isPaginate ? (pagenav.offsetHeight || 48) : safeAreaInset('bottom')
+    };
+    body.innerHTML = `<iframe id="readerIframe" sandbox="allow-scripts" srcdoc="${escapeAttr(buildReaderDoc(entry, book, insets))}"></iframe>`;
   }
 
   function paintEdit(){
@@ -2105,6 +2704,8 @@ function openReaderPage(parentOverlay, book, entryId){
       <div class="modal-body">
         <div class="action-sheet-item" id="moreEdit"><div class="glyph">${ICONS.edit}</div><div class="txt"><div class="t1">编辑正文</div></div></div>
         <div class="action-sheet-item" id="moreSettings"><div class="glyph">${ICONS.gear}</div><div class="txt"><div class="t1">阅读设置</div><div class="t2">背景 / 翻页方式 / 自定义CSS / 字体</div></div></div>
+        <div class="action-sheet-item" id="moreRead"><div class="glyph">${ICONS.speaker}</div><div class="txt"><div class="t1">朗读正文</div><div class="t2">用阅读设置里选的语音预设合成并播放</div></div></div>
+        ${book.type==='novel' ? `<div class="action-sheet-item" id="moreSummary"><div class="glyph">${ICONS.sparkle}</div><div class="txt"><div class="t1">前文总结</div><div class="t2">用AI把前面的正文压成前情提要</div></div></div>` : ''}
         <div class="action-sheet-item" id="moreCopy"><div class="glyph">${ICONS.copy}</div><div class="txt"><div class="t1">一键复制</div><div class="t2">复制正文,方便去续写</div></div></div>
         <div class="action-sheet-item" id="moreDelete"><div class="glyph">${ICONS.trash}</div><div class="txt"><div class="t1" style="color:var(--danger);">删除这条</div></div></div>
       </div>
@@ -2115,6 +2716,9 @@ function openReaderPage(parentOverlay, book, entryId){
       closeModal(sheet);
       openReaderSettingsSheet(book, ()=> paintRendered());
     });
+    sheet.querySelector('#moreRead').addEventListener('click', ()=>{ closeModal(sheet); startReadAloud(book, entry); });
+    const summaryItem = sheet.querySelector('#moreSummary');
+    if(summaryItem) summaryItem.addEventListener('click', ()=>{ closeModal(sheet); openSummarySheet(book, entry); });
     sheet.querySelector('#moreCopy').addEventListener('click', ()=>{ closeModal(sheet); openCopySheet(book, entry); });
     sheet.querySelector('#moreDelete').addEventListener('click', async ()=>{
       closeModal(sheet);
