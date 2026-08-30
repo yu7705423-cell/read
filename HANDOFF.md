@@ -75,7 +75,8 @@
 
   readerSettings: {
     background: '',       // CSS背景值,或 `url(dataURL) center/cover no-repeat`
-    pageEffect: 'scroll'|'paginate',
+    pageEffect: 'scroll'|'paginate'|'fade'|'vertical'|'flip'|'instant',
+    showPageNav: true,     // 分页样式下是否显示底部页码条,关掉就靠手势/点击/键盘
     customCss: '',
     fontUrl: '',           // 例如 Google Fonts 的 css2 链接
     voicePresetId: '',     // 关联到 presets 里 kind:'voice' 的记录(阅读设置里选)
@@ -101,10 +102,11 @@
   headersTemplate,  // 请求头 JSON 模板,支持 {{apiKey}},留空默认 Authorization: Bearer <key>
   audioPath,        // 响应里音频字段的点号路径,如 data.audio_url,留空则自动猜测
   chunkSize,        // 单次请求的字数上限,默认 1500,超出会按段落切分逐段合成
+  provider,         // 用过哪个快捷配置(minimax/openai/elevenlabs/siliconflow/custom),拉音色列表时要用
   createdAt }
 
 // 总结预设
-{ id, kind:'summary', name, endpoint, apiKey, model, promptTemplate, createdAt }
+{ id, kind:'summary', name, endpoint, apiKey, model, promptTemplate, provider, createdAt }
 ```
 
 ---
@@ -138,6 +140,46 @@ grep -c "<\\\\/script>" meow-reader.html   # 应该等于文件里内嵌script�
 
 代码位置:`buildReaderDoc()` 里 `isPaginate` 分支,以及生成的 iframe 内嵌 `<script>` 里的 `layout()` / `pagesUsed()` / `goTo()`。
 
+### 翻页样式(六种)
+
+`PAGE_EFFECTS` 数组定义,`isPaginatedEffect()` 判断是否属于"分页"类:
+
+| id | 名称 | 做法 |
+|---|---|---|
+| `scroll` | 竖屏滑动 | 不分页,正常滚动 |
+| `paginate` | 左右平移 | translateX 整条内容,唯一支持实时跟手拖动的样式 |
+| `fade` | 淡入淡出 | 淡出 → 无动画跳到新页 → 淡入 |
+| `vertical` | 上下翻页 | 纵向滑出屏幕 → 跳页 → 从另一侧纵向滑入 |
+| `flip` | 立体翻转 | body 上加 perspective,rotateY 转到 ±88° 再转回来 |
+| `instant` | 无动画 | 直接跳 |
+
+**为什么没有"覆盖""仿真书页卷曲"**:这类效果要求同屏出现两页(新页压在旧页上),而当前只有一份正文 DOM。要做就得把正文复制一份到第二层,但 `innerHTML` 复制出来的副本里,正文中嵌入的 HTML 小组件会失去交互(脚本不会重新执行,事件监听也不会跟着走)——而"番外里嵌的 HTML 要能正常显示和点击"是这个项目的核心需求之一,不能为了动画牺牲。所以六种样式全部是对同一条内容做变换。
+
+翻页动画进行中会置 `animating = true` 并忽略新的翻页请求,否则连点会让 `pageIndex` 和实际位移对不上。
+
+### 翻页操作方式
+
+- 左右滑动手势:`paginate` 样式下实时跟手(`DRAG_FOLLOWS`),首尾有阻尼回弹,松手不到阈值滑回原位;其余样式没有把相邻页渲染出来,跟不了手,所以按阈值触发。
+- 鼠标拖拽(桌面端)走同一套 `dragStart/dragMove/dragEnd`。
+- 点击屏幕左侧 30% / 右侧 30% 翻页,中间 40% 收起/展开工具栏。
+- 键盘 ←/→ / PageUp / PageDown / 空格 / Home / End。
+- 底部页码条可以在阅读设置里关掉(`readerSettings.showPageNav`)。关掉之后正文的底部留白会跟着缩回去(父页面传给 `buildReaderDoc` 的 `insets.bottom` 改成只留安全区),不会白空一条。
+
+### 自定义 CSS 的类名
+
+阅读页生成的每个元素都带 `mm-` 前缀的类名,方便用户写 CSS:
+
+| 选择器 | 是什么 |
+|---|---|
+| `.mm-body` | 阅读页正文文档的 body |
+| `.mm-page` | 翻页容器(分页时每一"页"就是它的一栏) |
+| `.mm-content` | 正文内容区,左右留白在这上面 |
+| `.mm-prompt` | 番外顶部的"番外要求"卡片 |
+| `.mm-p` | 每一个正文段落 |
+| `.mm-html` | 正文里嵌入的 HTML 块的外层容器 |
+
+`CSS_HELP` 里维护了两份速查表(`reader` / `app`),`cssHelpPanel(scope)` 生成可展开面板,`bindCssHelp()` 绑定"点示例追加进输入框"。**以后改了类名或加了新的可定制元素,记得同步更新 `CSS_HELP`**,否则速查表会骗人。
+
 ### 浮层层级(已修复)
 
 原来 `.modal-overlay` 是 90、`.reader-overlay` 是 70。这是为了让"从阅读页里打开的更多菜单/阅读设置/复制弹窗"能盖住阅读页,但代价是**从书籍详情进入阅读页之后,详情弹窗仍然盖在阅读页上面**——下半屏被挡住、翻页按钮完全点不到。
@@ -160,6 +202,17 @@ grep -c "<\\\\/script>" meow-reader.html   # 应该等于文件里内嵌script�
 - **解析不出来就把原始响应整段显示出来**(`showApiErrorModal()`),用户可以照着调预设。`fetch` 本身抛错会提示大概率是 CORS。
 
 一个坑:**Safari 只允许在用户手势里调用过 `play()` 的 `<audio>` 元素之后再用脚本播放**,而第一次合成要等好几个 await。所以 `startReadAloud()` 一进来就同步 `new Audio()` 并调一次 `play()` 把它"解锁",真正的异步流程放在里面的 async IIFE 里。
+
+### 快捷配置与拉取列表
+
+`TTS_PROVIDERS`(MiniMax / OpenAI 语音 / ElevenLabs / 硅基流动 / 自定义)和 `LLM_PROVIDERS`(OpenAI / DeepSeek / 硅基流动 / Kimi / OpenRouter / 自定义)是**模板**不是保证:点一下只会覆盖接口地址、请求头、请求体、响应字段这几个"传输"字段,用户已经填的名称/Key/音色不动,填完还能随便改。个别服务需要按账号补东西(MiniMax 要在地址里填自己的 GroupId),这一点写在了每个服务的 note 里。
+
+- **接口地址也支持占位符**(`resolveEndpoint()`),因为 ElevenLabs 这类服务把音色 ID 拼在 URL 路径里。
+- **MiniMax 返回的是十六进制音频**,不是 base64。`toAudioSrc()` 会判断:全 `[0-9a-f]`、偶数长度、超过 100 字符就当十六进制解码成 Blob(真实音频的 base64 几乎必然含有 hex 之外的字符,所以这个判断是安全的),否则才当 base64。
+- **拉取音色列表** `fetchVoiceList()`:有固定音色的服务(MiniMax、OpenAI)直接用内置列表,不发请求;ElevenLabs 这类去 `voicesEndpoint` 拉。
+- **拉取模型列表** `fetchModelList()`:OpenAI 兼容的服务都在 `/v1/chat/completions` 旁边有 `/v1/models`,`modelsUrlFor()` 从聊天地址推导出来。
+- 两个列表都过 `normaliseList()`,能吃 `{voices:[{voice_id,name}]}`、`{data:[{id}]}`、`{a:{b:["x","y"]}}` 等形状;指定路径找不到就退化成"找第一个非空数组"。
+- 拉到的列表填进一个 `<select>`,选中会写回上面的文本输入框——文本框始终保留,因为克隆音色、私有模型这些 ID 是列表里没有的。
 
 ### 第8块:AI总结前文
 

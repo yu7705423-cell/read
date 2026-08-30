@@ -1459,12 +1459,23 @@ async function openVoicePresetEditor(preset){
         <option value="">不指定</option>
         ${chars.map(c=>`<option value="${c.id}" ${preset?.characterId===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
       </select>
+      <label class="field-label">快捷配置</label>
+      <div class="chip-row">
+        ${TTS_PROVIDERS.map(pv=>`<button class="choice-chip" data-provider="${pv.id}">${escapeHtml(pv.name)}</button>`).join('')}
+      </div>
+      <div class="hint-text" id="vpProviderNote">点一下会把下面的接口地址、请求体、响应字段填成该服务的模板,你只要再填自己的 Key。所有字段仍然可以随便改。</div>
+
       <label class="field-label">接口地址(Endpoint)</label>
       <input type="text" id="vpEndpoint" value="${escapeAttr(preset?.endpoint||'')}" placeholder="https://...">
       <label class="field-label">API Key</label>
       <input type="text" id="vpApiKey" value="${escapeAttr(preset?.apiKey||'')}" placeholder="填你自己的密钥">
       <label class="field-label">音色 / Voice ID</label>
       <input type="text" id="vpVoiceId" value="${escapeAttr(preset?.voiceId||'')}" placeholder="接口要求的音色标识">
+      <div class="btn-row" style="margin-top:8px;">
+        <button class="btn sm" id="vpFetchVoicesBtn">拉取音色列表</button>
+      </div>
+      <select id="vpVoicePick" style="display:none; margin-top:8px;"></select>
+      <div class="hint-text" id="vpVoiceNote" style="display:none;"></div>
       <label class="field-label">额外参数(可选,JSON)</label>
       <textarea id="vpExtra" style="min-height:60px;" placeholder='{"speed":1.0}'>${escapeHtml(preset?.extraParams||'')}</textarea>
       <label class="field-label">朗读提示词注入(可选)</label>
@@ -1493,11 +1504,78 @@ async function openVoicePresetEditor(preset){
     </div>
   `);
   overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
+
+  let chosenProvider = preset?.provider || '';
+  const q = (sel)=> overlay.querySelector(sel);
+  const providerNote = q('#vpProviderNote');
+  const DEFAULT_PROVIDER_NOTE = providerNote.textContent;
+  function paintProviderChips(){
+    overlay.querySelectorAll('[data-provider]').forEach(b=>{
+      b.classList.toggle('selected', b.dataset.provider === chosenProvider);
+    });
+    const pv = TTS_PROVIDERS.find(x=>x.id === chosenProvider);
+    providerNote.textContent = pv && pv.note ? pv.note : DEFAULT_PROVIDER_NOTE;
+  }
+  paintProviderChips();
+  overlay.querySelectorAll('[data-provider]').forEach(b=>{
+    b.addEventListener('click', ()=>{
+      const pv = TTS_PROVIDERS.find(x=>x.id === b.dataset.provider);
+      if(!pv) return;
+      chosenProvider = pv.id;
+      // Only the transport fields are templated — the name, key and voice the
+      // user already typed are theirs and stay put.
+      q('#vpEndpoint').value = pv.endpoint || '';
+      q('#vpHeaders').value = pv.headersTemplate || '';
+      q('#vpBody').value = pv.bodyTemplate || '';
+      q('#vpAudioPath').value = pv.audioPath || '';
+      paintProviderChips();
+      hideVoicePicker();
+      showToast(pv.id === 'custom' ? '已清空模板' : ('已填入 ' + pv.name + ' 模板'));
+    });
+  });
+
+  const voicePick = q('#vpVoicePick');
+  const voiceNote = q('#vpVoiceNote');
+  function hideVoicePicker(){ voicePick.style.display = 'none'; voiceNote.style.display = 'none'; }
+  function showVoicePicker(list, note){
+    const current = q('#vpVoiceId').value.trim();
+    voicePick.innerHTML = `<option value="">选择音色…</option>` +
+      list.map(v=>`<option value="${escapeAttr(v.id)}" ${v.id===current?'selected':''}>${escapeHtml(v.name)}${v.name!==v.id?(' ('+escapeHtml(v.id)+')'):''}</option>`).join('');
+    voicePick.style.display = '';
+    if(note){ voiceNote.textContent = note; voiceNote.style.display = ''; }
+  }
+  voicePick.addEventListener('change', ()=>{
+    if(voicePick.value) q('#vpVoiceId').value = voicePick.value;
+  });
+  const fetchVoicesBtn = q('#vpFetchVoicesBtn');
+  fetchVoicesBtn.addEventListener('click', async ()=>{
+    fetchVoicesBtn.disabled = true;
+    const label = fetchVoicesBtn.textContent;
+    fetchVoicesBtn.textContent = '拉取中…';
+    try{
+      const probe = {
+        provider: chosenProvider,
+        endpoint: q('#vpEndpoint').value.trim(),
+        apiKey: q('#vpApiKey').value.trim(),
+        headersTemplate: q('#vpHeaders').value.trim()
+      };
+      const list = await fetchVoiceList(probe);
+      const pv = TTS_PROVIDERS.find(x=>x.id === chosenProvider);
+      showVoicePicker(list, (pv && pv.voicesNote) || (list.length + ' 个音色,选一个会填进上面的输入框'));
+      showToast('拿到 ' + list.length + ' 个音色');
+    }catch(err){
+      showApiErrorModal('拉取音色列表失败', err);
+    }finally{
+      fetchVoicesBtn.disabled = false;
+      fetchVoicesBtn.textContent = label;
+    }
+  });
+
   overlay.querySelector('#saveVoicePresetBtn').addEventListener('click', async ()=>{
     const name = overlay.querySelector('#vpName').value.trim();
     if(!name){ showToast('请填写预设名称'); return; }
     const record = {
-      id: preset?.id || uid(), kind:'voice', name,
+      id: preset?.id || uid(), kind:'voice', name, provider: chosenProvider,
       characterId: overlay.querySelector('#vpCharacter').value || '',
       endpoint: overlay.querySelector('#vpEndpoint').value.trim(),
       apiKey: overlay.querySelector('#vpApiKey').value.trim(),
@@ -1532,12 +1610,23 @@ async function openSummaryPresetEditor(preset){
     <div class="modal-body">
       <label class="field-label">预设名称</label>
       <input type="text" id="spName" value="${escapeAttr(preset?.name||'')}" placeholder="例如: 长篇前文总结">
+      <label class="field-label">快捷配置</label>
+      <div class="chip-row">
+        ${LLM_PROVIDERS.map(pv=>`<button class="choice-chip" data-llm="${pv.id}">${escapeHtml(pv.name)}</button>`).join('')}
+      </div>
+      <div class="hint-text">点一下填入该服务的接口地址和一个默认模型。任何 OpenAI 兼容的服务都能用,自建网关选"自定义"自己填。</div>
+
       <label class="field-label">接口地址(Endpoint)</label>
       <input type="text" id="spEndpoint" value="${escapeAttr(preset?.endpoint||'')}" placeholder="https://...">
       <label class="field-label">API Key</label>
       <input type="text" id="spApiKey" value="${escapeAttr(preset?.apiKey||'')}" placeholder="填你自己的密钥">
       <label class="field-label">模型名称</label>
       <input type="text" id="spModel" value="${escapeAttr(preset?.model||'')}" placeholder="例如: gpt-4o-mini">
+      <div class="btn-row" style="margin-top:8px;">
+        <button class="btn sm" id="spFetchModelsBtn">拉取模型列表</button>
+      </div>
+      <select id="spModelPick" style="display:none; margin-top:8px;"></select>
+      <div class="hint-text" id="spModelNote" style="display:none;"></div>
       <label class="field-label">总结提示词(Prompt)</label>
       <textarea id="spPrompt" style="min-height:100px;" placeholder="例如: 请将以下正文压缩为300字以内的前情提要,保留关键人物关系与未解决的悬念">${escapeHtml(preset?.promptTemplate||'')}</textarea>
       <div class="btn-row">
@@ -1547,11 +1636,62 @@ async function openSummaryPresetEditor(preset){
     </div>
   `);
   overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
+
+  const q = (sel)=> overlay.querySelector(sel);
+  let chosenLlm = preset?.provider || '';
+  function paintLlmChips(){
+    overlay.querySelectorAll('[data-llm]').forEach(b=>{
+      b.classList.toggle('selected', b.dataset.llm === chosenLlm);
+    });
+  }
+  paintLlmChips();
+  overlay.querySelectorAll('[data-llm]').forEach(b=>{
+    b.addEventListener('click', ()=>{
+      const pv = LLM_PROVIDERS.find(x=>x.id === b.dataset.llm);
+      if(!pv) return;
+      chosenLlm = pv.id;
+      q('#spEndpoint').value = pv.endpoint || '';
+      q('#spModel').value = pv.model || '';
+      paintLlmChips();
+      q('#spModelPick').style.display = 'none';
+      q('#spModelNote').style.display = 'none';
+      showToast(pv.id === 'custom' ? '已清空' : ('已填入 ' + pv.name));
+    });
+  });
+
+  const modelPick = q('#spModelPick');
+  modelPick.addEventListener('change', ()=>{ if(modelPick.value) q('#spModel').value = modelPick.value; });
+  const fetchModelsBtn = q('#spFetchModelsBtn');
+  fetchModelsBtn.addEventListener('click', async ()=>{
+    fetchModelsBtn.disabled = true;
+    const label = fetchModelsBtn.textContent;
+    fetchModelsBtn.textContent = '拉取中…';
+    try{
+      const list = await fetchModelList({
+        endpoint: q('#spEndpoint').value.trim(),
+        apiKey: q('#spApiKey').value.trim()
+      });
+      const current = q('#spModel').value.trim();
+      modelPick.innerHTML = `<option value="">选择模型…</option>` +
+        list.map(m=>`<option value="${escapeAttr(m.id)}" ${m.id===current?'selected':''}>${escapeHtml(m.id)}</option>`).join('');
+      modelPick.style.display = '';
+      const note = q('#spModelNote');
+      note.textContent = list.length + ' 个模型,选一个会填进上面的输入框';
+      note.style.display = '';
+      showToast('拿到 ' + list.length + ' 个模型');
+    }catch(err){
+      showApiErrorModal('拉取模型列表失败', err);
+    }finally{
+      fetchModelsBtn.disabled = false;
+      fetchModelsBtn.textContent = label;
+    }
+  });
+
   overlay.querySelector('#saveSummaryPresetBtn').addEventListener('click', async ()=>{
     const name = overlay.querySelector('#spName').value.trim();
     if(!name){ showToast('请填写预设名称'); return; }
     const record = {
-      id: preset?.id || uid(), kind:'summary', name,
+      id: preset?.id || uid(), kind:'summary', name, provider: chosenLlm,
       endpoint: overlay.querySelector('#spEndpoint').value.trim(),
       apiKey: overlay.querySelector('#spApiKey').value.trim(),
       model: overlay.querySelector('#spModel').value.trim(),
@@ -1579,6 +1719,81 @@ async function openSummaryPresetEditor(preset){
    about the request or response shape can be assumed. Everything is driven by
    templates and configurable field paths, and whenever parsing fails the raw
    response is shown so the user can adjust their preset. */
+
+/* Quick-config templates for the mainstream services. These are starting
+   points, not guarantees: each account may need its own tweak (MiniMax wants a
+   GroupId in the URL, self-hosted gateways use their own base URL), so every
+   field stays editable after a template is applied. */
+const TTS_PROVIDERS = [
+  {
+    id:'minimax', name:'MiniMax',
+    note:'需要在接口地址里把 GroupId 换成你自己的。返回的是十六进制音频,已自动解码。',
+    endpoint:'https://api.minimax.chat/v1/t2a_v2?GroupId=你的GroupId',
+    headersTemplate:'{"Authorization":"Bearer {{apiKey}}","Content-Type":"application/json"}',
+    bodyTemplate:'{\n  "model": "speech-02-hd",\n  "text": "{{text}}",\n  "stream": false,\n  "voice_setting": { "voice_id": "{{voice}}", "speed": 1, "vol": 1, "pitch": 0 },\n  "audio_setting": { "format": "mp3", "sample_rate": 32000 }\n}',
+    audioPath:'data.audio',
+    voices:[
+      {id:'male-qn-qingse', name:'青涩青年音色'},
+      {id:'male-qn-jingying', name:'精英青年音色'},
+      {id:'male-qn-badao', name:'霸道青年音色'},
+      {id:'female-shaonv', name:'少女音色'},
+      {id:'female-yujie', name:'御姐音色'},
+      {id:'female-chengshu', name:'成熟女性音色'},
+      {id:'female-tianmei', name:'甜美女性音色'},
+      {id:'presenter_male', name:'男性主持人'},
+      {id:'presenter_female', name:'女性主持人'},
+      {id:'audiobook_male_1', name:'男性有声书1'},
+      {id:'audiobook_female_1', name:'女性有声书1'}
+    ],
+    voicesNote:'这是系统音色,克隆音色的 ID 直接手填即可。'
+  },
+  {
+    id:'openai', name:'OpenAI 语音',
+    note:'也适用于任何 OpenAI 兼容网关,把地址换成自己的即可。直接返回音频文件。',
+    endpoint:'https://api.openai.com/v1/audio/speech',
+    headersTemplate:'{"Authorization":"Bearer {{apiKey}}","Content-Type":"application/json"}',
+    bodyTemplate:'{\n  "model": "tts-1",\n  "input": "{{text}}",\n  "voice": "{{voice}}",\n  "response_format": "mp3"\n}',
+    audioPath:'',
+    voices:[
+      {id:'alloy',name:'alloy'},{id:'echo',name:'echo'},{id:'fable',name:'fable'},
+      {id:'onyx',name:'onyx'},{id:'nova',name:'nova'},{id:'shimmer',name:'shimmer'}
+    ]
+  },
+  {
+    id:'elevenlabs', name:'ElevenLabs',
+    note:'音色 ID 直接拼在地址里,可以点"拉取音色"从账号里取。',
+    endpoint:'https://api.elevenlabs.io/v1/text-to-speech/{{voice}}',
+    headersTemplate:'{"xi-api-key":"{{apiKey}}","Content-Type":"application/json"}',
+    bodyTemplate:'{\n  "text": "{{text}}",\n  "model_id": "eleven_multilingual_v2"\n}',
+    audioPath:'',
+    voicesEndpoint:'https://api.elevenlabs.io/v1/voices',
+    voicesPath:'voices', voiceIdKey:'voice_id', voiceNameKey:'name'
+  },
+  {
+    id:'siliconflow', name:'硅基流动',
+    note:'OpenAI 兼容格式,直接返回音频文件。',
+    endpoint:'https://api.siliconflow.cn/v1/audio/speech',
+    headersTemplate:'{"Authorization":"Bearer {{apiKey}}","Content-Type":"application/json"}',
+    bodyTemplate:'{\n  "model": "FunAudioLLM/CosyVoice2-0.5B",\n  "input": "{{text}}",\n  "voice": "{{voice}}",\n  "response_format": "mp3"\n}',
+    audioPath:''
+  },
+  {
+    id:'custom', name:'自定义',
+    note:'清空模板,所有字段自己填。',
+    endpoint:'', headersTemplate:'', bodyTemplate:'', audioPath:''
+  }
+];
+
+/* Anything OpenAI-compatible works for summaries, so the quick config is just
+   the base URL plus a sensible default model. */
+const LLM_PROVIDERS = [
+  { id:'openai',      name:'OpenAI',   endpoint:'https://api.openai.com/v1/chat/completions',      model:'gpt-4o-mini' },
+  { id:'deepseek',    name:'DeepSeek', endpoint:'https://api.deepseek.com/v1/chat/completions',    model:'deepseek-chat' },
+  { id:'siliconflow', name:'硅基流动',  endpoint:'https://api.siliconflow.cn/v1/chat/completions',  model:'Qwen/Qwen2.5-7B-Instruct' },
+  { id:'moonshot',    name:'Kimi',     endpoint:'https://api.moonshot.cn/v1/chat/completions',     model:'moonshot-v1-8k' },
+  { id:'openrouter',  name:'OpenRouter', endpoint:'https://openrouter.ai/api/v1/chat/completions', model:'openai/gpt-4o-mini' },
+  { id:'custom',      name:'自定义',    endpoint:'', model:'' }
+];
 
 class ApiError extends Error{
   constructor(message, raw){ super(message); this.raw = raw || ''; }
@@ -1713,20 +1928,39 @@ function findAudioValue(node, depth){
   }
   return '';
 }
+function hexToObjectUrl(hex){
+  const bytes = new Uint8Array(hex.length / 2);
+  for(let i=0;i<bytes.length;i++) bytes[i] = parseInt(hex.substr(i*2, 2), 16);
+  return URL.createObjectURL(new Blob([bytes], {type:'audio/mpeg'}));
+}
+/* The value can be a URL, a data URI, base64, or — MiniMax does this — a hex
+   dump of the audio file. Base64 of real audio essentially always contains
+   characters outside [0-9a-f], so an all-hex string of even length is hex. */
 function toAudioSrc(val){
   const v = String(val).trim();
-  if(/^data:/i.test(v)) return v;
-  if(/^https?:\/\//i.test(v)) return v;
-  if(/^\/\//.test(v)) return 'https:' + v;
-  return 'data:audio/mpeg;base64,' + v.replace(/^base64,/, '').replace(/\s+/g, '');
+  if(/^data:/i.test(v)) return { src:v, revoke:false };
+  if(/^https?:\/\//i.test(v)) return { src:v, revoke:false };
+  if(/^\/\//.test(v)) return { src:'https:' + v, revoke:false };
+  const compact = v.replace(/^base64,/, '').replace(/\s+/g, '');
+  if(compact.length > 100 && compact.length % 2 === 0 && /^[0-9a-fA-F]+$/.test(compact)){
+    return { src: hexToObjectUrl(compact), revoke:true };
+  }
+  return { src:'data:audio/mpeg;base64,' + compact, revoke:false };
 }
 
+/* Some services put the voice id in the path (ElevenLabs), so the endpoint
+   accepts the same placeholders as the body. */
+function resolveEndpoint(preset){
+  return fillTemplate(preset.endpoint || '', {
+    voice: preset.voiceId || '', apiKey: preset.apiKey || ''
+  });
+}
 async function synthesizeChunk(preset, text){
   const headers = buildPresetHeaders(preset);
   const body = buildVoiceBody(preset, text);
   let res;
   try{
-    res = await fetch(preset.endpoint, { method:'POST', headers, body });
+    res = await fetch(resolveEndpoint(preset), { method:'POST', headers, body });
   }catch(e){
     throw new ApiError('请求发不出去,通常是接口不允许网页跨域访问(CORS),或者地址填错了。');
   }
@@ -1742,7 +1976,7 @@ async function synthesizeChunk(preset, text){
   try{ json = JSON.parse(raw); }
   catch(e){
     const t = raw.trim();
-    if(/^(https?:\/\/|data:)/i.test(t)) return { src: toAudioSrc(t), revoke: false };
+    if(/^(https?:\/\/|data:)/i.test(t)) return toAudioSrc(t);
     throw new ApiError('响应既不是音频也不是 JSON', raw);
   }
   let val = preset.audioPath ? getByPath(json, preset.audioPath) : '';
@@ -1750,7 +1984,73 @@ async function synthesizeChunk(preset, text){
   if(!val || typeof val !== 'string'){
     throw new ApiError(preset.audioPath ? ('响应里找不到字段 ' + preset.audioPath) : '没能自动认出响应里的音频字段,请在预设里填写"响应音频字段路径"', raw);
   }
-  return { src: toAudioSrc(val), revoke: false };
+  return toAudioSrc(val);
+}
+
+/* ---------- pulling voice / model lists ---------- */
+function findFirstObjectArray(node, depth){
+  if(depth > 4 || node === null || typeof node !== 'object') return null;
+  if(Array.isArray(node)) return node.length ? node : null;
+  for(const key of Object.keys(node)){
+    const hit = findFirstObjectArray(node[key], depth+1);
+    if(hit) return hit;
+  }
+  return null;
+}
+async function fetchJson(url, headers){
+  let res;
+  try{
+    res = await fetch(url, { method:'GET', headers });
+  }catch(e){
+    throw new ApiError('请求发不出去,通常是接口不允许网页跨域访问(CORS),或者地址填错了。\n请求地址: ' + url);
+  }
+  const raw = await res.text();
+  if(!res.ok) throw new ApiError('接口返回错误状态 ' + res.status + '\n请求地址: ' + url, raw);
+  try{ return JSON.parse(raw); }
+  catch(e){ throw new ApiError('响应不是 JSON\n请求地址: ' + url, raw); }
+}
+/* Normalise whatever list shape came back into {id, name} pairs. */
+function normaliseList(json, path, idKey, nameKey){
+  let arr = path ? getByPath(json, path) : null;
+  if(!Array.isArray(arr)) arr = findFirstObjectArray(json, 0);
+  if(!Array.isArray(arr) || !arr.length) return [];
+  return arr.map(item=>{
+    if(typeof item === 'string') return { id:item, name:item };
+    const id = (idKey && item[idKey]) || item.id || item.voice_id || item.model || item.name || '';
+    const name = (nameKey && item[nameKey]) || item.name || item.display_name || item.title || id;
+    return id ? { id:String(id), name:String(name) } : null;
+  }).filter(Boolean);
+}
+async function fetchVoiceList(preset){
+  const provider = TTS_PROVIDERS.find(p=>p.id === preset.provider);
+  if(provider && provider.voices) return provider.voices;
+  const url = preset.voicesEndpoint || (provider && provider.voicesEndpoint) || '';
+  if(!url) throw new ApiError('这个服务没有可以拉取的音色列表,音色 ID 请手动填写。');
+  const headers = buildPresetHeaders(preset);
+  delete headers['Content-Type'];
+  const json = await fetchJson(fillTemplate(url, {apiKey: preset.apiKey||''}), headers);
+  const list = normaliseList(json, preset.voicesPath || (provider && provider.voicesPath), 
+    provider && provider.voiceIdKey, provider && provider.voiceNameKey);
+  if(!list.length) throw new ApiError('响应里没找到音色列表', JSON.stringify(json).slice(0, 3000));
+  return list;
+}
+/* OpenAI-compatible services all expose /v1/models next to /v1/chat/completions. */
+function modelsUrlFor(endpoint){
+  const ep = (endpoint||'').trim().replace(/\?.*$/, '');
+  if(!ep) return '';
+  if(/\/chat\/completions\/?$/.test(ep)) return ep.replace(/\/chat\/completions\/?$/, '/models');
+  if(/\/v\d+\/?$/.test(ep)) return ep.replace(/\/$/, '') + '/models';
+  return ep.replace(/\/[^/]*$/, '') + '/models';
+}
+async function fetchModelList(preset){
+  const url = modelsUrlFor(preset.endpoint);
+  if(!url) throw new ApiError('请先填写接口地址,再拉取模型列表。');
+  const headers = buildPresetHeaders(preset);
+  delete headers['Content-Type'];
+  const json = await fetchJson(url, headers);
+  const list = normaliseList(json, 'data', 'id', 'id');
+  if(!list.length) throw new ApiError('响应里没找到模型列表\n请求地址: ' + url, JSON.stringify(json).slice(0, 3000));
+  return list.sort((a,b)=>a.id.localeCompare(b.id));
 }
 
 /* ---------- floating player ---------- */
