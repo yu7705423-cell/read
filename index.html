@@ -1,0 +1,2288 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>喵喵书阁</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;700&family=Noto+Sans+SC:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
+<style>
+:root[data-theme="light"]{
+  --bg:#F7F6F3; --surface:#FFFFFF; --surface-2:#FBFAF8;
+  --ink:#2B2A28; --ink-soft:#726E68; --ink-faint:#A9A49C;
+  --accent:#6E5A8C; --accent-ink:#FFFFFF; --accent-soft:#EFE9F5;
+  --border:#E6E2DA; --danger:#B5533C; --danger-soft:#F6E7E2;
+  --tag-extra:#7A9B87; --tag-novel:#8C7A5A;
+  --shadow: 0 1px 2px rgba(30,26,20,0.04), 0 4px 16px rgba(30,26,20,0.06);
+}
+:root[data-theme="dark"]{
+  --bg:#17161A; --surface:#211F25; --surface-2:#26232A;
+  --ink:#ECE9E4; --ink-soft:#A8A39C; --ink-faint:#6E6A64;
+  --accent:#B0A0D4; --accent-ink:#1B1720; --accent-soft:#332C40;
+  --border:#332F37; --danger:#E08A73; --danger-soft:#3A2620;
+  --tag-extra:#8FB79C; --tag-novel:#C9AE78;
+  --shadow: 0 1px 2px rgba(0,0,0,0.2), 0 6px 20px rgba(0,0,0,0.35);
+}
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;height:100%;}
+body{
+  background:var(--bg); color:var(--ink);
+  font-family:"Noto Sans SC",-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+  -webkit-font-smoothing:antialiased;
+  transition:background .25s ease, color .25s ease;
+}
+h1,h2,h3,.serif{font-family:"Noto Serif SC",serif;}
+#app{max-width:560px;margin:0 auto;min-height:100vh;display:flex;flex-direction:column;position:relative;}
+
+/* header */
+.app-header{
+  padding:18px 18px 10px; display:flex; align-items:baseline; gap:8px;
+  position:sticky; top:0; background:var(--bg); z-index:5;
+}
+.app-header .mark{font-size:20px;}
+.app-header h1{font-size:19px; font-weight:700; margin:0; letter-spacing:.5px;}
+.app-header .sub{font-size:11px; color:var(--ink-faint); margin-left:auto;}
+
+/* tabs */
+main{flex:1; overflow-y:auto; padding:4px 16px 96px;}
+.tab-panel{display:none;}
+.tab-panel.active{display:block; animation:fadein .2s ease;}
+@keyframes fadein{from{opacity:0; transform:translateY(4px);} to{opacity:1; transform:translateY(0);}}
+
+.bottom-nav{
+  position:sticky; bottom:0; left:0; right:0;
+  display:flex; background:var(--surface); border-top:1px solid var(--border);
+  padding:6px 6px calc(6px + env(safe-area-inset-bottom));
+  z-index:10;
+}
+.nav-btn{
+  flex:1; background:none; border:none; display:flex; flex-direction:column; align-items:center; gap:3px;
+  padding:8px 4px 6px; color:var(--ink-faint); font-size:11px; cursor:pointer; border-radius:10px;
+  font-family:inherit;
+}
+.nav-btn svg{width:20px; height:20px; stroke:currentColor; fill:none; stroke-width:1.6;}
+.nav-btn.active{color:var(--accent);}
+.nav-btn.active svg{stroke:var(--accent);}
+
+/* section titles */
+.section-title{font-size:13px; color:var(--ink-faint); margin:14px 2px 8px; letter-spacing:.5px;}
+
+/* book grid */
+.book-grid{display:grid; grid-template-columns:repeat(2,1fr); gap:12px;}
+.book-card{
+  background:var(--surface); border:1px solid var(--border); border-radius:14px; overflow:hidden;
+  cursor:pointer; box-shadow:var(--shadow); display:flex; flex-direction:column;
+  transition:transform .15s ease;
+}
+.book-card:active{transform:scale(.97);}
+.book-cover{
+  aspect-ratio:3/4; background:var(--accent-soft); display:flex; align-items:center; justify-content:center;
+  color:var(--accent); font-size:26px; position:relative; overflow:hidden;
+}
+.book-cover img{width:100%; height:100%; object-fit:cover;}
+.book-type-chip{
+  position:absolute; top:6px; left:6px; font-size:10px; padding:2px 7px; border-radius:20px;
+  color:#fff; font-weight:600; letter-spacing:.3px;
+}
+.book-card .body{padding:9px 10px 11px;}
+.book-card .title{font-size:13.5px; font-weight:600; line-height:1.3; margin:0 0 4px;
+  display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;}
+.book-card .meta{font-size:11px; color:var(--ink-faint); display:flex; flex-wrap:wrap; gap:4px;}
+.mini-tag{background:var(--surface-2); border:1px solid var(--border); padding:1px 6px; border-radius:8px; font-size:10px; color:var(--ink-soft);}
+
+.empty-state{
+  text-align:center; padding:60px 20px; color:var(--ink-faint);
+}
+.empty-state .glyph{font-size:30px; margin-bottom:10px;}
+.empty-state .hint{font-size:12.5px; margin-top:6px;}
+
+/* fab */
+.fab{
+  position:fixed; right:calc(50% - 280px + 20px); bottom:calc(78px + env(safe-area-inset-bottom)); width:52px; height:52px; border-radius:50%;
+  background:var(--accent); color:var(--accent-ink); border:none; font-size:26px; box-shadow:var(--shadow);
+  cursor:pointer; z-index:8; display:flex; align-items:center; justify-content:center; line-height:1;
+}
+@media (max-width:600px){ .fab{right:20px;} }
+
+/* buttons */
+.btn{
+  border:1px solid var(--border); background:var(--surface); color:var(--ink); padding:10px 14px;
+  border-radius:10px; font-size:13.5px; cursor:pointer; font-family:inherit; font-weight:500;
+}
+.btn.primary{background:var(--accent); color:var(--accent-ink); border-color:var(--accent);}
+.btn.danger{color:var(--danger); border-color:var(--danger-soft); background:var(--danger-soft);}
+.btn.ghost{background:none; border-color:transparent; color:var(--ink-soft);}
+.btn.block{width:100%;}
+.btn.sm{padding:6px 10px; font-size:12px; border-radius:8px;}
+.btn:disabled{opacity:.4; cursor:not-allowed;}
+.btn-row{display:flex; gap:8px; margin-top:14px;}
+
+/* form elements */
+label.field-label{display:block; font-size:12px; color:var(--ink-soft); margin:14px 0 6px; font-weight:600;}
+input[type=text], input[type=search], textarea, select{
+  width:100%; background:var(--surface-2); border:1px solid var(--border); border-radius:10px;
+  padding:10px 12px; font-size:16px; color:var(--ink); font-family:inherit;
+}
+textarea{resize:vertical; min-height:80px; line-height:1.55;}
+.hint-text{font-size:11px; color:var(--ink-faint); margin-top:5px;}
+.chip-row{display:flex; flex-wrap:wrap; gap:8px;}
+.choice-chip{
+  border:1px solid var(--border); background:var(--surface-2); padding:7px 12px; border-radius:20px;
+  font-size:12.5px; cursor:pointer; color:var(--ink-soft);
+  display:inline-flex; align-items:center; gap:6px; font-family:inherit;
+}
+.choice-chip.selected{background:var(--accent); border-color:var(--accent); color:var(--accent-ink); font-weight:600;}
+
+/* type select big cards */
+.type-pick{display:flex; gap:10px;}
+.type-card{
+  flex:1; border:1.5px solid var(--border); border-radius:14px; padding:16px 12px; text-align:center;
+  cursor:pointer; background:var(--surface-2);
+}
+.type-card.selected{border-color:var(--accent); background:var(--accent-soft);}
+.type-card .glyph{font-size:22px; margin-bottom:6px;}
+.type-card .name{font-weight:700; font-size:14px;}
+.type-card .desc{font-size:11px; color:var(--ink-faint); margin-top:3px; line-height:1.4;}
+
+/* participant rows */
+.participant-list{display:flex; flex-direction:column; gap:8px;}
+.participant-row{
+  display:flex; align-items:center; gap:10px; background:var(--surface-2); border:1px solid var(--border);
+  border-radius:12px; padding:8px 10px;
+}
+.p-avatar{width:34px; height:34px; border-radius:50%; background:var(--accent-soft); color:var(--accent);
+  display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:700; overflow:hidden; flex-shrink:0;}
+.p-avatar img{width:100%; height:100%; object-fit:cover;}
+.p-info{flex:1; min-width:0;}
+.p-name{font-size:13px; font-weight:600;}
+.p-role{font-size:10.5px; color:var(--ink-faint);}
+.p-role-tag{font-size:10px; padding:2px 7px; border-radius:8px; font-weight:600;}
+.p-role-tag.char{background:var(--accent-soft); color:var(--accent);}
+.p-role-tag.user{background:var(--surface); border:1px solid var(--border); color:var(--ink-soft);}
+.icon-btn{background:none; border:none; color:var(--ink-faint); cursor:pointer; padding:4px; font-size:16px;}
+.add-participant-btn{
+  border:1.5px dashed var(--border); background:none; border-radius:12px; padding:10px; color:var(--ink-soft);
+  font-size:12.5px; cursor:pointer; text-align:center; font-family:inherit;
+}
+
+/* cover uploader */
+.cover-upload{
+  width:96px; height:128px; border-radius:12px; border:1.5px dashed var(--border); background:var(--surface-2);
+  display:flex; flex-direction:column; align-items:center; justify-content:center; color:var(--ink-faint);
+  font-size:11px; cursor:pointer; overflow:hidden; position:relative;
+}
+.cover-upload img{width:100%; height:100%; object-fit:cover; position:absolute; inset:0;}
+
+/* modal */
+.modal-overlay{
+  position:fixed; inset:0; background:rgba(20,17,14,.45); display:flex; align-items:flex-end; justify-content:center;
+  z-index:90; opacity:0; pointer-events:none; transition:opacity .2s ease;
+}
+.modal-overlay.open{opacity:1; pointer-events:auto;}
+.modal-sheet{
+  background:var(--bg); width:100%; max-width:560px; border-radius:20px 20px 0 0; max-height:90vh;
+  display:flex; flex-direction:column; transform:translateY(16px); transition:transform .22s ease;
+  box-shadow:0 -8px 30px rgba(0,0,0,.2);
+}
+.modal-overlay.open .modal-sheet{transform:translateY(0);}
+.modal-header{
+  display:flex; align-items:center; padding:14px 16px 10px; border-bottom:1px solid var(--border); position:sticky; top:0; background:var(--bg);
+}
+.modal-header h2{font-size:16px; margin:0; flex:1;}
+.modal-body{padding:6px 16px 20px; overflow-y:auto;}
+.modal-close{background:none; border:none; font-size:18px; color:var(--ink-faint); cursor:pointer; padding:4px 8px;}
+
+/* actionsheet for + button */
+.action-sheet-item{
+  display:flex; align-items:center; gap:12px; padding:14px 6px; border-bottom:1px solid var(--border); cursor:pointer;
+}
+.action-sheet-item:last-child{border-bottom:none;}
+.action-sheet-item .glyph{font-size:20px; width:28px; text-align:center;}
+.action-sheet-item .txt .t1{font-size:14px; font-weight:600;}
+.action-sheet-item .txt .t2{font-size:11.5px; color:var(--ink-faint); margin-top:2px;}
+
+/* wizard steps */
+.step-dots{display:flex; gap:5px; margin:2px 0 4px;}
+.step-dots span{width:18px; height:3px; border-radius:2px; background:var(--border);}
+.step-dots span.on{background:var(--accent);}
+
+/* detail page */
+.detail-cover-row{display:flex; gap:14px; align-items:flex-start; margin-bottom:6px;}
+.detail-cover{width:88px; height:118px; border-radius:10px; overflow:hidden; background:var(--accent-soft); flex-shrink:0;
+  display:flex; align-items:center; justify-content:center; color:var(--accent); font-size:22px;}
+.detail-cover img{width:100%; height:100%; object-fit:cover;}
+.detail-title{font-size:17px; font-weight:700; margin:0 0 6px; line-height:1.35;}
+.entry-list{display:flex; flex-direction:column; gap:8px; margin-top:6px;}
+.entry-item{
+  background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:11px 12px; cursor:pointer;
+}
+.entry-item .t{font-size:13.5px; font-weight:600;}
+.entry-item .m{font-size:11px; color:var(--ink-faint); margin-top:3px;}
+.back-row{display:flex; align-items:center; gap:8px; margin:6px 0 4px;}
+.back-row .btn{padding:6px 10px;}
+
+/* fullscreen reader */
+.reader-overlay{
+  position:fixed; inset:0; background:var(--bg); z-index:70; overflow:hidden;
+  transform:translateY(100%); transition:transform .28s ease;
+}
+.reader-overlay.open{transform:translateY(0);}
+.reader-topbar{
+  position:absolute; top:0; left:0; right:0; z-index:6;
+  display:flex; align-items:center; gap:4px; padding:calc(10px + env(safe-area-inset-top)) 8px 10px;
+  border-bottom:1px solid var(--border); background:var(--surface); flex-shrink:0;
+  transition:transform .22s ease, opacity .22s ease;
+}
+.reader-topbar.collapsed{ transform:translateY(-100%); opacity:0; pointer-events:none; }
+.reader-topbar .icon-btn{padding:8px; border-radius:8px;}
+.reader-topbar .r-title{
+  flex:1; font-size:13.5px; font-weight:600; text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding:0 4px;
+}
+.reader-peek{
+  position:absolute; top:0; left:50%; transform:translateX(-50%); z-index:7; margin-top:env(safe-area-inset-top);
+  background:var(--surface); border:1px solid var(--border); border-top:none; border-radius:0 0 12px 12px;
+  padding:3px 20px; color:var(--ink-faint); display:none; align-items:center; justify-content:center; cursor:pointer;
+}
+.reader-peek.show{display:flex;}
+.reader-body{position:absolute; inset:0;}
+.reader-body iframe{width:100%; height:100%; border:none; display:block;}
+.reader-edit-body{position:absolute; inset:0; overflow-y:auto; padding:calc(64px + env(safe-area-inset-top)) 16px 16px;}
+.reader-pagenav{
+  position:absolute; left:0; right:0; bottom:0; z-index:6; display:flex; align-items:center; justify-content:center;
+  gap:16px; padding:8px 14px calc(10px + env(safe-area-inset-bottom)); background:var(--surface);
+  border-top:1px solid var(--border); transition:transform .22s ease, opacity .22s ease; font-size:12px; color:var(--ink-soft);
+}
+.reader-pagenav.collapsed{ transform:translateY(100%); opacity:0; pointer-events:none; }
+.reader-pagenav button{ background:var(--surface-2); border:1px solid var(--border); border-radius:8px; width:34px; height:30px; color:var(--ink); }
+.reader-pagenav button:disabled{opacity:.35;}
+.bg-swatch-row{display:flex; flex-wrap:wrap; gap:8px;}
+.bg-swatch{width:38px; height:38px; border-radius:10px; border:2px solid var(--border); cursor:pointer; flex-shrink:0;}
+.bg-swatch.selected{border-color:var(--accent); box-shadow:0 0 0 2px var(--accent-soft);}
+.bg-upload-swatch{width:38px; height:38px; border-radius:10px; border:2px dashed var(--border); display:flex; align-items:center; justify-content:center; color:var(--ink-faint); cursor:pointer; flex-shrink:0;}
+
+.iframe-preview{
+  width:100%; height:60vh; border:1px solid var(--border); border-radius:12px; background:#fff;
+}
+
+
+/* misc */
+.toast{
+  position:fixed; left:50%; bottom:100px; transform:translateX(-50%); background:var(--ink); color:var(--bg);
+  padding:9px 16px; border-radius:20px; font-size:12.5px; z-index:100; opacity:0; transition:opacity .25s ease, transform .25s ease;
+  pointer-events:none;
+}
+.toast.show{opacity:1;}
+.placeholder-box{
+  border:1px dashed var(--border); border-radius:14px; padding:40px 20px; text-align:center; color:var(--ink-faint); font-size:12.5px; margin-top:14px;
+}
+.settings-row{
+  background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:12px 14px; margin-bottom:10px;
+}
+.settings-row .row-title{font-size:13.5px; font-weight:600; margin-bottom:8px;}
+.theme-pick{display:flex; gap:8px;}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <header class="app-header">
+    <span class="mark"><svg viewBox="0 0 24 24" width="19" height="19" fill="currentColor"><circle cx="7" cy="8" r="2"/><circle cx="12" cy="6" r="2"/><circle cx="17" cy="8" r="2"/><path d="M12 11c-3.5 0-6 2.3-6 5.2 0 1.9 1.6 3.3 3.6 2.7.8-.2 1.6-.5 2.4-.5s1.6.3 2.4.5c2 .6 3.6-.8 3.6-2.7 0-2.9-2.5-5.2-6-5.2z"/></svg></span>
+    <h1>喵喵书阁</h1>
+    <span class="sub" id="bookCountLabel"></span>
+  </header>
+
+  <main>
+    <section id="tab-shelf" class="tab-panel active">
+      <div class="section-title">我的书架</div>
+      <div id="shelfGrid" class="book-grid"></div>
+      <div id="shelfEmpty" class="empty-state" style="display:none;">
+        <div class="glyph">(=^･ω･^=)</div>
+        <div>还没有书,点右下角 + 建一本吧</div>
+      </div>
+    </section>
+
+    <section id="tab-search" class="tab-panel">
+      <div class="section-title">搜索</div>
+      <input type="search" id="searchInput" placeholder="书名 / 章节名 / 角色名 / 番外剧情 / 标签">
+      <div class="chip-row" id="searchFacetRow" style="margin:10px 0;">
+        <button class="choice-chip selected" data-facet="all">全部</button>
+        <button class="choice-chip" data-facet="category">自定义分类</button>
+        <button class="choice-chip" data-facet="character">角色</button>
+        <button class="choice-chip" data-facet="extra">番外剧情</button>
+        <button class="choice-chip" data-facet="tag">标签</button>
+      </div>
+      <div id="searchFacetSelected"></div>
+      <div id="searchResults" class="entry-list"></div>
+    </section>
+
+    <section id="tab-tools" class="tab-panel">
+      <div class="section-title">导入</div>
+      <label class="btn primary block" style="cursor:pointer; text-align:center;">
+        选择文件导入
+        <input type="file" id="toolsFileInput" multiple accept=".txt,.md,.docx,.zip,.tar,.gz,.tgz" style="display:none;">
+      </label>
+      <div class="hint-text" style="margin-top:8px;">支持 txt / docx / zip(自动解开内部嵌套的 zip)/ tar / tar.gz。这里导入的内容只是方便一键复制的素材,不会进书架。</div>
+      <div id="toolsStatus" class="hint-text" style="display:none; margin-top:8px;"></div>
+      <div class="section-title" style="display:flex; align-items:center; gap:6px;">
+        <span>素材库(<span id="materialCount">0</span>)</span>
+        <button class="icon-btn" id="addTextMaterialBtn" title="新建文字素材" style="margin-left:auto; font-size:18px;">+</button>
+        <button class="btn ghost sm" id="toggleSelectModeBtn">多选</button>
+        <button class="btn ghost sm" id="clearMaterialsBtn">清空</button>
+      </div>
+      <div class="chip-row" id="materialsFolderRow" style="margin-bottom:10px;"></div>
+      <div class="entry-list" id="materialsList"></div>
+      <div id="materialsSelectBar" style="display:none;"></div>
+    </section>
+
+    <section id="tab-settings" class="tab-panel">
+      <div class="section-title">外观</div>
+      <div class="settings-row">
+        <div class="row-title">主题</div>
+        <div class="theme-pick">
+          <button class="choice-chip" data-theme-choice="light"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" style="vertical-align:-2px; margin-right:4px;"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>明亮</button>
+          <button class="choice-chip" data-theme-choice="dark"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" style="vertical-align:-2px; margin-right:4px;"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z"/></svg>黑暗</button>
+        </div>
+      </div>
+      <div class="settings-row">
+        <div class="row-title">自定义主题 CSS</div>
+        <textarea id="customCssInput" placeholder="粘贴 CSS,例如: :root[data-theme='light']{ --accent:#ff8899; }" style="min-height:90px;"></textarea>
+        <div class="btn-row">
+          <label class="btn sm" style="cursor:pointer;">
+            导入 .css 文件
+            <input type="file" accept=".css" id="cssFileInput" style="display:none;">
+          </label>
+          <button class="btn sm primary" id="applyCustomCssBtn">应用</button>
+          <button class="btn sm ghost" id="clearCustomCssBtn">清除</button>
+        </div>
+        <div class="hint-text">自定义 CSS 会叠加在当前明暗主题之上,可用来覆盖 --accent 等变量或任意选择器样式。</div>
+      </div>
+      <div class="section-title" style="display:flex; align-items:center; gap:8px;">
+        <span>语音预设</span>
+        <button class="btn ghost sm" id="addVoicePresetBtn" style="margin-left:auto;">+ 新建</button>
+      </div>
+      <div class="hint-text" style="margin:-4px 0 8px;">保存不同角色对应的语音接口配置,书籍阅读页里可以选用来朗读。</div>
+      <div class="entry-list" id="voicePresetList"></div>
+
+      <div class="section-title" style="display:flex; align-items:center; gap:8px;">
+        <span>总结预设</span>
+        <button class="btn ghost sm" id="addSummaryPresetBtn" style="margin-left:auto;">+ 新建</button>
+      </div>
+      <div class="hint-text" style="margin:-4px 0 8px;">长篇正文太长时,用这里配置的接口和提示词生成前文总结,方便继续续写。</div>
+      <div class="entry-list" id="summaryPresetList"></div>
+
+      <div class="section-title">数据备份</div>
+      <div class="settings-row">
+        <div class="row-title">导出 / 导入整体设置</div>
+        <div class="hint-text" style="margin-bottom:10px;">打包全部书籍、角色、素材和预设为一个 JSON 文件,方便换设备或分享给别人。导入时按 ID 合并,同名条目会被覆盖,不会清空原有数据。</div>
+        <div class="btn-row" style="margin-top:0;">
+          <button class="btn sm" id="exportDataBtn">导出 JSON</button>
+          <label class="btn sm primary" style="cursor:pointer;">
+            导入 JSON
+            <input type="file" accept=".json" id="importDataInput" style="display:none;">
+          </label>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <nav class="bottom-nav">
+    <button class="nav-btn active" data-tab="shelf">
+      <svg viewBox="0 0 24 24"><path d="M4 4h4v16H4zM10 4h4v16h-4zM16 4h4v16h-4z"/></svg>
+      书架
+    </button>
+    <button class="nav-btn" data-tab="search">
+      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+      搜索
+    </button>
+    <button class="nav-btn" data-tab="tools">
+      <svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4l-6 6 2 2 6-6a4 4 0 0 0 5.4-5.4l-2.3 2.3-2-2z"/></svg>
+      工具
+    </button>
+    <button class="nav-btn" data-tab="settings">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.2a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.2a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.2a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.2a1.7 1.7 0 0 0-1.5 1z"/></svg>
+      设置
+    </button>
+  </nav>
+
+  <button class="fab" id="fabBtn" style="display:none;">+</button>
+</div>
+
+<div id="modalRoot"></div>
+<div class="toast" id="toast"></div>
+
+<script>
+/* ================= Icons (SVG only, no emoji) ================= */
+const ICONS = {
+  close: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+  back: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M15 6l-6 6 6 6"/></svg>',
+  sun: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>',
+  moon: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z"/></svg>',
+  bookOpen: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 6c-1.5-1.2-4-2-7-2v14c3 0 5.5.8 7 2 1.5-1.2 4-2 7-2V4c-3 0-5.5.8-7 2z"/><path d="M12 6v14"/></svg>',
+  note: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M7 3h8l4 4v14H7z"/><path d="M15 3v4h4"/><path d="M9 12h6M9 16h6"/></svg>',
+  bookStack: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="4" width="16" height="4.5" rx="1"/><rect x="4" y="10" width="16" height="4.5" rx="1"/><rect x="4" y="16" width="16" height="4" rx="1"/></svg>',
+  download: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 4v11M8 11l4 4 4-4"/><path d="M5 19h14"/></svg>',
+  edit: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 20l4-1 11-11-3-3L5 16l-1 4z"/></svg>',
+  trash: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>',
+  book: '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3V4z"/><path d="M5 17a3 3 0 0 1 3-3h11"/></svg>',
+  paw: '<svg viewBox="0 0 24 24" width="17" height="17" fill="currentColor"><circle cx="7" cy="8" r="2"/><circle cx="12" cy="6" r="2"/><circle cx="17" cy="8" r="2"/><path d="M12 11c-3.5 0-6 2.3-6 5.2 0 1.9 1.6 3.3 3.6 2.7.8-.2 1.6-.5 2.4-.5s1.6.3 2.4.5c2 .6 3.6-.8 3.6-2.7 0-2.9-2.5-5.2-6-5.2z"/></svg>',
+  more: '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><circle cx="12" cy="5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="19" r="1.7"/></svg>',
+  chevronUp: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 15l6-6 6 6"/></svg>',
+  chevronDown: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>',
+  chevronLeft: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 6l-6 6 6 6"/></svg>',
+  chevronRight: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>',
+  gear: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.2a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.2a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.2a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.2a1.7 1.7 0 0 0-1.5 1z"/></svg>',
+  copy: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg>',
+  palette: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 2-.9 2-2 0-.5-.2-1-.5-1.3-.3-.4-.5-.8-.5-1.3 0-1.1.9-2 2-2h2.2c1.5 0 2.8-1.3 2.8-2.8C19 6.6 15.9 3 12 3z"/><circle cx="7.5" cy="10.5" r="1.1" fill="currentColor" stroke="none"/><circle cx="11" cy="7" r="1.1" fill="currentColor" stroke="none"/><circle cx="15.5" cy="8" r="1.1" fill="currentColor" stroke="none"/></svg>',
+  scrollMode: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6h16M4 12h16M4 18h16"/></svg>',
+  pageMode: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="4" width="8" height="16" rx="1.5"/><rect x="13" y="4" width="8" height="16" rx="1.5"/></svg>',
+  check: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12l5 5 9-9"/></svg>'
+};
+
+/* ================= IndexedDB layer ================= */
+const DB_NAME = 'meowReaderDB', DB_VERSION = 1;
+let dbInstance = null;
+function openDB(){
+  return new Promise((resolve,reject)=>{
+    if(dbInstance) return resolve(dbInstance);
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = (e)=>{
+      const db = e.target.result;
+      if(!db.objectStoreNames.contains('characters')) db.createObjectStore('characters',{keyPath:'id'});
+      if(!db.objectStoreNames.contains('books')) db.createObjectStore('books',{keyPath:'id'});
+      if(!db.objectStoreNames.contains('materials')) db.createObjectStore('materials',{keyPath:'id'});
+      if(!db.objectStoreNames.contains('presets')) db.createObjectStore('presets',{keyPath:'id'});
+    };
+    req.onsuccess = ()=>{ dbInstance = req.result; resolve(dbInstance); };
+    req.onerror = ()=> reject(req.error);
+  });
+}
+async function dbPut(store, obj){
+  const db = await openDB();
+  return new Promise((res,rej)=>{
+    const tx = db.transaction(store,'readwrite');
+    tx.objectStore(store).put(obj);
+    tx.oncomplete = ()=>res(obj);
+    tx.onerror = ()=>rej(tx.error);
+  });
+}
+async function dbGetAll(store){
+  const db = await openDB();
+  return new Promise((res,rej)=>{
+    const tx = db.transaction(store,'readonly');
+    const req = tx.objectStore(store).getAll();
+    req.onsuccess = ()=>res(req.result || []);
+    req.onerror = ()=>rej(req.error);
+  });
+}
+async function dbGet(store, id){
+  const db = await openDB();
+  return new Promise((res,rej)=>{
+    const tx = db.transaction(store,'readonly');
+    const req = tx.objectStore(store).get(id);
+    req.onsuccess = ()=>res(req.result || null);
+    req.onerror = ()=>rej(req.error);
+  });
+}
+async function dbDelete(store, id){
+  const db = await openDB();
+  return new Promise((res,rej)=>{
+    const tx = db.transaction(store,'readwrite');
+    tx.objectStore(store).delete(id);
+    tx.oncomplete = ()=>res();
+    tx.onerror = ()=>rej(tx.error);
+  });
+}
+function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
+
+/* ================= Toast ================= */
+let toastTimer=null;
+function showToast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(()=>t.classList.remove('show'), 1800);
+}
+
+/* ================= Theme ================= */
+function applyTheme(mode){
+  document.documentElement.setAttribute('data-theme', mode === 'dark' ? 'dark' : 'light');
+  localStorage.setItem('mmr_theme', mode);
+  document.querySelectorAll('[data-theme-choice]').forEach(b=>{
+    b.classList.toggle('selected', b.dataset.themeChoice === mode);
+  });
+}
+function initTheme(){
+  const saved = localStorage.getItem('mmr_theme') || 'light';
+  applyTheme(saved);
+  document.querySelectorAll('[data-theme-choice]').forEach(b=>{
+    b.addEventListener('click', ()=> applyTheme(b.dataset.themeChoice));
+  });
+  const savedCss = localStorage.getItem('mmr_custom_css') || '';
+  if(savedCss){
+    document.getElementById('customCssInput').value = savedCss;
+    injectCustomCss(savedCss);
+  }
+  document.getElementById('applyCustomCssBtn').addEventListener('click', ()=>{
+    const css = document.getElementById('customCssInput').value;
+    localStorage.setItem('mmr_custom_css', css);
+    injectCustomCss(css);
+    showToast('已应用自定义主题');
+  });
+  document.getElementById('clearCustomCssBtn').addEventListener('click', ()=>{
+    document.getElementById('customCssInput').value = '';
+    localStorage.removeItem('mmr_custom_css');
+    injectCustomCss('');
+    showToast('已清除');
+  });
+  document.getElementById('cssFileInput').addEventListener('change', (e)=>{
+    const f = e.target.files[0];
+    if(!f) return;
+    const reader = new FileReader();
+    reader.onload = ()=>{
+      document.getElementById('customCssInput').value = reader.result;
+    };
+    reader.readAsText(f);
+  });
+}
+function injectCustomCss(css){
+  let tag = document.getElementById('customThemeStyle');
+  if(!tag){
+    tag = document.createElement('style');
+    tag.id = 'customThemeStyle';
+    document.head.appendChild(tag);
+  }
+  tag.textContent = css || '';
+}
+
+/* ================= Tab navigation ================= */
+function initTabs(){
+  document.querySelectorAll('.nav-btn').forEach(btn=>{
+    btn.addEventListener('click', ()=>switchTab(btn.dataset.tab));
+  });
+  switchTab('shelf');
+}
+function switchTab(tab){
+  document.querySelectorAll('.nav-btn').forEach(b=>b.classList.toggle('active', b.dataset.tab===tab));
+  document.querySelectorAll('.tab-panel').forEach(p=>p.classList.toggle('active', p.id === 'tab-'+tab));
+  document.getElementById('fabBtn').style.display = (tab==='shelf') ? 'flex' : 'none';
+  if(tab === 'search' && typeof renderSearch === 'function') renderSearch();
+  if(tab === 'tools' && typeof refreshMaterials === 'function') refreshMaterials();
+  if(tab === 'settings'){
+    if(typeof refreshVoicePresets === 'function') refreshVoicePresets();
+    if(typeof refreshSummaryPresets === 'function') refreshSummaryPresets();
+  }
+}
+
+/* ================= Modal helpers ================= */
+function openModal(innerHtml, opts={}){
+  const root = document.getElementById('modalRoot');
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `<div class="modal-sheet">${innerHtml}</div>`;
+  root.appendChild(overlay);
+  requestAnimationFrame(()=>overlay.classList.add('open'));
+  if(!opts.noBackdropClose){
+    overlay.addEventListener('click', (e)=>{ if(e.target === overlay) closeModal(overlay); });
+  }
+  return overlay;
+}
+function closeModal(overlay){
+  overlay.classList.remove('open');
+  setTimeout(()=> overlay.remove(), 200);
+}
+
+/* ================= FAB: new book / import chapter ================= */
+function initFab(){
+  document.getElementById('fabBtn').addEventListener('click', ()=>{
+    const overlay = openModal(`
+      <div class="modal-header"><h2>添加</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+      <div class="modal-body">
+        <div class="action-sheet-item" id="actNewBook">
+          <div class="glyph">${ICONS.book}</div>
+          <div class="txt"><div class="t1">新建书籍</div><div class="t2">创建番外集或长篇,配置角色</div></div>
+        </div>
+        <div class="action-sheet-item" id="actImportChapter">
+          <div class="glyph">${ICONS.download}</div>
+          <div class="txt"><div class="t1">导入章节 / 番外</div><div class="t2">添加到已有的书里</div></div>
+        </div>
+      </div>
+    `);
+    overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
+    overlay.querySelector('#actNewBook').addEventListener('click', ()=>{ closeModal(overlay); openNewBookWizard(); });
+    overlay.querySelector('#actImportChapter').addEventListener('click', ()=>{ closeModal(overlay); openImportChapterFlow(); });
+  });
+}
+
+/* ================= Character helpers ================= */
+async function getAllCharacters(){ return await dbGetAll('characters'); }
+async function createCharacter(name, role, avatar){
+  const ch = { id: uid(), name: name.trim(), roleDefault: role, avatar: avatar||'', note:'', createdAt: Date.now() };
+  await dbPut('characters', ch);
+  return ch;
+}
+function avatarOrInitial(p){
+  if(p.avatar) return `<img src="${p.avatar}" alt="">`;
+  return (p.name||'?').slice(0,1);
+}
+
+/* ================= New Book Wizard ================= */
+let wizardState = null;
+function openNewBookWizard(){
+  wizardState = { type:null, participants: [], cover:'', title:'', tags:[], category:'', background:'' };
+  renderWizardStep(1);
+}
+function renderWizardStep(step){
+  const overlay = openModal(`<div id="wizardMount"></div>`, {noBackdropClose:true});
+  wizardOverlay = overlay;
+  paintWizard(step);
+}
+let wizardOverlay = null;
+function paintWizard(step){
+  const mount = wizardOverlay.querySelector('#wizardMount');
+  const totalSteps = wizardState.type === 'novel' ? 4 : 3;
+  let dots = '';
+  for(let i=1;i<=totalSteps;i++) dots += `<span class="${i<=step?'on':''}"></span>`;
+
+  if(step===1){
+    mount.innerHTML = `
+      <div class="modal-header"><h2>新建书籍</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+      <div class="modal-body">
+        <div class="step-dots">${dots}</div>
+        <label class="field-label">这本书是?</label>
+        <div class="type-pick">
+          <div class="type-card ${wizardState.type==='extra'?'selected':''}" data-type="extra">
+            <div class="glyph">${ICONS.note}</div><div class="name">番外页</div>
+            <div class="desc">多条独立小剧情,各自成篇</div>
+          </div>
+          <div class="type-card ${wizardState.type==='novel'?'selected':''}" data-type="novel">
+            <div class="glyph">${ICONS.bookStack}</div><div class="name">长篇</div>
+            <div class="desc">一份背景 + 多个连续章节</div>
+          </div>
+        </div>
+        <div class="btn-row">
+          <button class="btn primary block" id="toStep2" ${wizardState.type?'':'disabled'}>下一步</button>
+        </div>
+      </div>`;
+    mount.querySelectorAll('.type-card').forEach(c=>{
+      c.addEventListener('click', ()=>{ wizardState.type = c.dataset.type; paintWizard(1); });
+    });
+    const nextBtn = mount.querySelector('#toStep2');
+    if(nextBtn) nextBtn.addEventListener('click', ()=>paintWizard(2));
+  }
+
+  if(step===2){
+    mount.innerHTML = `
+      <div class="modal-header"><button class="modal-close" data-back>${ICONS.back}</button><h2>参与角色</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+      <div class="modal-body">
+        <div class="step-dots">${dots}</div>
+        <div class="hint-text" style="margin-bottom:10px;">可以添加多个 char 和多个 user,选已有角色库,也可以直接新建。</div>
+        <div class="participant-list" id="pList"></div>
+        <button class="add-participant-btn" id="addParticipantBtn" style="margin-top:10px;">+ 添加角色</button>
+        <div class="btn-row">
+          <button class="btn primary block" id="toStep3" ${wizardState.participants.length? '':'disabled'}>下一步</button>
+        </div>
+      </div>`;
+    renderParticipantList(mount);
+    mount.querySelector('[data-back]').addEventListener('click', ()=>paintWizard(1));
+    mount.querySelector('#addParticipantBtn').addEventListener('click', ()=>{
+      openAddParticipantSheet((p)=>{
+        wizardState.participants.push(p);
+        renderParticipantList(mount);
+        const nb = mount.querySelector('#toStep3');
+        if(nb) nb.disabled = false;
+      });
+    });
+    const nb = mount.querySelector('#toStep3');
+    if(nb) nb.addEventListener('click', ()=>paintWizard(3));
+  }
+
+  if(step===3){
+    mount.innerHTML = `
+      <div class="modal-header"><button class="modal-close" data-back>${ICONS.back}</button><h2>基本信息</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+      <div class="modal-body">
+        <div class="step-dots">${dots}</div>
+        <label class="field-label">封面(可选)</label>
+        <label class="cover-upload" id="coverUploadBox">
+          ${wizardState.cover ? `<img src="${wizardState.cover}">` : '点击上传'}
+          <input type="file" accept="image/*" id="coverInput" style="display:none;">
+        </label>
+        <label class="field-label">书名</label>
+        <input type="text" id="titleInput" placeholder="给这本书起个名字" value="${escapeAttr(wizardState.title)}">
+        <label class="field-label">标签(逗号分隔)</label>
+        <input type="text" id="tagsInput" placeholder="例如: 甜文, 现代AU, 短篇" value="${escapeAttr(wizardState.tags.join(', '))}">
+        <label class="field-label">自定义分类</label>
+        <input type="text" id="categoryInput" list="categoryList" placeholder="例如: 某角色的番外合集" value="${escapeAttr(wizardState.category)}">
+        <datalist id="categoryList"></datalist>
+        <div class="btn-row">
+          <button class="btn primary block" id="toNext" ${wizardState.type==='novel'?'':''}>${wizardState.type==='novel'?'下一步':'创建'}</button>
+        </div>
+      </div>`;
+    mount.querySelector('[data-back]').addEventListener('click', ()=>paintWizard(2));
+    mount.querySelector('#coverUploadBox').addEventListener('click', (e)=>{
+      if(e.target.id==='coverInput') return;
+    });
+    mount.querySelector('#coverInput').addEventListener('change', (e)=>handleCoverUpload(e, mount));
+    populateCategoryList(mount);
+    const nextBtn = mount.querySelector('#toNext');
+    nextBtn.addEventListener('click', ()=>{
+      wizardState.title = mount.querySelector('#titleInput').value.trim() || '未命名书籍';
+      wizardState.tags = mount.querySelector('#tagsInput').value.split(',').map(s=>s.trim()).filter(Boolean);
+      wizardState.category = mount.querySelector('#categoryInput').value.trim();
+      if(wizardState.type === 'novel') paintWizard(4);
+      else finishWizard();
+    });
+  }
+
+  if(step===4){
+    mount.innerHTML = `
+      <div class="modal-header"><button class="modal-close" data-back>${ICONS.back}</button><h2>长篇背景</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+      <div class="modal-body">
+        <div class="step-dots">${dots}</div>
+        <label class="field-label">故事背景 / 设定</label>
+        <textarea id="bgInput" placeholder="世界观、人物关系、开篇设定等..." style="min-height:140px;">${escapeHtml(wizardState.background)}</textarea>
+        <div class="hint-text">章节可以在创建后于书籍详情页里继续添加。</div>
+        <div class="btn-row">
+          <button class="btn primary block" id="finishBtn">创建</button>
+        </div>
+      </div>`;
+    mount.querySelector('[data-back]').addEventListener('click', ()=>paintWizard(3));
+    mount.querySelector('#finishBtn').addEventListener('click', ()=>{
+      wizardState.background = mount.querySelector('#bgInput').value;
+      finishWizard();
+    });
+  }
+
+  mount.querySelectorAll('[data-close]').forEach(b=>b.addEventListener('click', ()=>closeModal(wizardOverlay)));
+}
+function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function escapeAttr(s){ return escapeHtml(s); }
+
+async function populateCategoryList(mount){
+  const books = await dbGetAll('books');
+  const cats = [...new Set(books.map(b=>b.category).filter(Boolean))];
+  const dl = mount.querySelector('#categoryList');
+  if(dl) dl.innerHTML = cats.map(c=>`<option value="${escapeAttr(c)}">`).join('');
+}
+function handleCoverUpload(e, mount){
+  const f = e.target.files[0];
+  if(!f) return;
+  const reader = new FileReader();
+  reader.onload = ()=>{
+    const img = new Image();
+    img.onload = ()=>{
+      const canvas = document.createElement('canvas');
+      const maxW = 480;
+      const scale = Math.min(1, maxW/img.width);
+      canvas.width = img.width*scale; canvas.height = img.height*scale;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img,0,0,canvas.width,canvas.height);
+      wizardState.cover = canvas.toDataURL('image/jpeg', 0.85);
+      paintWizard(3);
+    };
+    img.src = reader.result;
+  };
+  reader.readAsDataURL(f);
+}
+
+function renderParticipantList(mount){
+  const list = mount.querySelector('#pList');
+  if(!wizardState.participants.length){
+    list.innerHTML = `<div class="hint-text">还没有添加角色</div>`;
+    return;
+  }
+  list.innerHTML = wizardState.participants.map((p,idx)=>`
+    <div class="participant-row">
+      <div class="p-avatar">${avatarOrInitial(p)}</div>
+      <div class="p-info">
+        <div class="p-name">${escapeHtml(p.name)}</div>
+      </div>
+      <span class="p-role-tag ${p.role}">${p.role==='char'?'角色 char':'用户 user'}</span>
+      <button class="icon-btn" data-remove="${idx}">${ICONS.close}</button>
+    </div>
+  `).join('');
+  list.querySelectorAll('[data-remove]').forEach(b=>{
+    b.addEventListener('click', ()=>{
+      wizardState.participants.splice(parseInt(b.dataset.remove),1);
+      renderParticipantList(mount);
+      const nb = mount.querySelector('#toStep3');
+      if(nb) nb.disabled = wizardState.participants.length===0;
+    });
+  });
+}
+
+async function openAddParticipantSheet(onAdd){
+  const existing = await getAllCharacters();
+  const overlay = openModal(`
+    <div class="modal-header"><h2>添加角色</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+    <div class="modal-body">
+      <div class="chip-row" style="margin-bottom:12px;">
+        <button class="choice-chip selected" data-mode="existing">已有角色</button>
+        <button class="choice-chip" data-mode="new">新建角色</button>
+      </div>
+      <div id="apMount"></div>
+    </div>
+  `);
+  overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
+  const apMount = overlay.querySelector('#apMount');
+
+  function paintExisting(){
+    if(!existing.length){
+      apMount.innerHTML = `<div class="hint-text">角色库还是空的,先切到"新建角色"吧。</div>`;
+      return;
+    }
+    apMount.innerHTML = `
+      <select id="existingSelect">
+        ${existing.map(c=>`<option value="${c.id}">${escapeHtml(c.name)} (${c.roleDefault==='char'?'char':'user'})</option>`).join('')}
+      </select>
+      <label class="field-label">作为</label>
+      <div class="chip-row"><button class="choice-chip selected" data-role="char">char</button><button class="choice-chip" data-role="user">user</button></div>
+      <div class="btn-row"><button class="btn primary block" id="confirmExisting">添加</button></div>
+    `;
+    let role = 'char';
+    apMount.querySelectorAll('[data-role]').forEach(b=>b.addEventListener('click', ()=>{
+      apMount.querySelectorAll('[data-role]').forEach(x=>x.classList.remove('selected'));
+      b.classList.add('selected'); role = b.dataset.role;
+    }));
+    apMount.querySelector('#confirmExisting').addEventListener('click', ()=>{
+      const id = apMount.querySelector('#existingSelect').value;
+      const ch = existing.find(c=>c.id===id);
+      onAdd({ characterId: ch.id, name: ch.name, avatar: ch.avatar, role });
+      closeModal(overlay);
+    });
+  }
+  function paintNew(){
+    apMount.innerHTML = `
+      <label class="field-label">名字</label>
+      <input type="text" id="newName" placeholder="角色 / 用户名">
+      <label class="field-label">作为</label>
+      <div class="chip-row"><button class="choice-chip selected" data-role="char">char</button><button class="choice-chip" data-role="user">user</button></div>
+      <label class="field-label">头像(可选)</label>
+      <label class="cover-upload" style="width:72px; height:72px; border-radius:50%;" id="newAvatarBox">
+        选择图片
+        <input type="file" accept="image/*" id="newAvatarInput" style="display:none;">
+      </label>
+      <div class="btn-row"><button class="btn primary block" id="confirmNew">创建并添加</button></div>
+    `;
+    let role='char', avatarData='';
+    apMount.querySelectorAll('[data-role]').forEach(b=>b.addEventListener('click', ()=>{
+      apMount.querySelectorAll('[data-role]').forEach(x=>x.classList.remove('selected'));
+      b.classList.add('selected'); role = b.dataset.role;
+    }));
+    apMount.querySelector('#newAvatarInput').addEventListener('change', (e)=>{
+      const f = e.target.files[0]; if(!f) return;
+      const reader = new FileReader();
+      reader.onload = ()=>{
+        avatarData = reader.result;
+        apMount.querySelector('#newAvatarBox').innerHTML = `<img src="${avatarData}" style="width:100%;height:100%;object-fit:cover;">`;
+      };
+      reader.readAsDataURL(f);
+    });
+    apMount.querySelector('#confirmNew').addEventListener('click', async ()=>{
+      const name = apMount.querySelector('#newName').value.trim();
+      if(!name){ showToast('请输入名字'); return; }
+      const ch = await createCharacter(name, role, avatarData);
+      onAdd({ characterId: ch.id, name: ch.name, avatar: ch.avatar, role });
+      closeModal(overlay);
+    });
+  }
+  overlay.querySelectorAll('[data-mode]').forEach(b=>{
+    b.addEventListener('click', ()=>{
+      overlay.querySelectorAll('[data-mode]').forEach(x=>x.classList.remove('selected'));
+      b.classList.add('selected');
+      b.dataset.mode==='existing' ? paintExisting() : paintNew();
+    });
+  });
+  paintExisting();
+}
+
+async function finishWizard(){
+  const book = {
+    id: uid(),
+    title: wizardState.title,
+    cover: wizardState.cover,
+    type: wizardState.type,
+    tags: wizardState.tags,
+    category: wizardState.category,
+    participants: wizardState.participants,
+    createdAt: Date.now(), updatedAt: Date.now(),
+    episodes: wizardState.type==='extra' ? [] : undefined,
+    background: wizardState.type==='novel' ? wizardState.background : undefined,
+    chapters: wizardState.type==='novel' ? [] : undefined,
+    readerSettings: { background:'', pageEffect:'scroll', customCss:'', fontUrl:'', voicePresetId:'', summaryPresetId:'' }
+  };
+  await dbPut('books', book);
+  closeModal(wizardOverlay);
+  showToast('书籍创建成功 owo');
+  await refreshShelf();
+}
+
+/* ================= Import Chapter Flow ================= */
+async function openImportChapterFlow(){
+  const books = await dbGetAll('books');
+  if(!books.length){ showToast('还没有书籍,先新建一本吧'); return; }
+  const overlay = openModal(`
+    <div class="modal-header"><h2>导入到已有书籍</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+    <div class="modal-body">
+      <label class="field-label">选择书籍</label>
+      <select id="pickBook">
+        ${books.map(b=>`<option value="${b.id}">${escapeHtml(b.title)} (${b.type==='extra'?'番外页':'长篇'})</option>`).join('')}
+      </select>
+      <div id="importMount"></div>
+    </div>
+  `);
+  overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
+  const importMount = overlay.querySelector('#importMount');
+  function paintForBook(book){
+    if(book.type==='extra'){
+      importMount.innerHTML = `
+        <label class="field-label">番外要求(剧情主题/设定要求,例如别人给出的生成指令)</label>
+        <textarea id="epPrompt" style="min-height:70px;" placeholder="例如: 生成一段雨天便利店偶遇的番外..."></textarea>
+        <label class="field-label">番外剧情标题</label>
+        <input type="text" id="epTitle" placeholder="给这段番外起个名字">
+        <label class="field-label">正文(AI回复的内容,支持粘贴 HTML/CSS)</label>
+        <textarea id="epContent" style="min-height:160px;" placeholder="正文内容..."></textarea>
+        <div class="btn-row"><button class="btn primary block" id="doImport">添加番外</button></div>
+      `;
+      importMount.querySelector('#doImport').addEventListener('click', async ()=>{
+        const title = importMount.querySelector('#epTitle').value.trim() || '未命名番外';
+        const prompt = importMount.querySelector('#epPrompt').value;
+        const content = importMount.querySelector('#epContent').value;
+        book.episodes = book.episodes || [];
+        book.episodes.push({ id: uid(), title, prompt, content, createdAt: Date.now() });
+        book.updatedAt = Date.now();
+        await dbPut('books', book);
+        closeModal(overlay);
+        showToast('已添加番外剧情');
+        await refreshShelf();
+      });
+    } else {
+      const nextOrder = (book.chapters||[]).length + 1;
+      importMount.innerHTML = `
+        <label class="field-label">章节标题</label>
+        <input type="text" id="chTitle" placeholder="第 ${nextOrder} 章 ...">
+        <label class="field-label">内容(支持粘贴 HTML/CSS)</label>
+        <textarea id="chContent" style="min-height:160px;" placeholder="正文内容..."></textarea>
+        <div class="btn-row"><button class="btn primary block" id="doImport">添加章节</button></div>
+      `;
+      importMount.querySelector('#doImport').addEventListener('click', async ()=>{
+        const title = importMount.querySelector('#chTitle').value.trim() || ('第 '+nextOrder+' 章');
+        const content = importMount.querySelector('#chContent').value;
+        book.chapters = book.chapters || [];
+        book.chapters.push({ id: uid(), title, content, order: nextOrder, createdAt: Date.now() });
+        book.updatedAt = Date.now();
+        await dbPut('books', book);
+        closeModal(overlay);
+        showToast('已添加章节');
+        await refreshShelf();
+      });
+    }
+  }
+  paintForBook(books.find(b=>b.id===overlay.querySelector('#pickBook').value));
+  overlay.querySelector('#pickBook').addEventListener('change', (e)=>{
+    paintForBook(books.find(b=>b.id===e.target.value));
+  });
+}
+
+/* ================= Tools: import & parse ================= */
+function parseTarBuffer(buffer){
+  const entries = [];
+  const view = new Uint8Array(buffer);
+  let offset = 0;
+  function readStr(o,l){
+    let s = '';
+    for(let i=0;i<l;i++){
+      if(o+i >= view.length || view[o+i]===0) break;
+      s += String.fromCharCode(view[o+i]);
+    }
+    return s.trim();
+  }
+  while(offset + 512 <= view.length){
+    let allZero = true;
+    for(let i=0;i<512;i++){ if(view[offset+i]!==0){ allZero=false; break; } }
+    if(allZero) break;
+    const name = readStr(offset, 100);
+    if(!name) break;
+    const sizeStr = readStr(offset+124, 12);
+    const size = parseInt(sizeStr, 8) || 0;
+    const typeFlag = String.fromCharCode(view[offset+156] || 48);
+    const dataStart = offset + 512;
+    if(typeFlag === '0' || typeFlag === ''){
+      entries.push({ name, buffer: buffer.slice(dataStart, dataStart+size) });
+    }
+    offset = dataStart + Math.ceil(size/512)*512;
+  }
+  return entries;
+}
+
+async function processFileEntry(name, arrayBuffer, materials, pathStack){
+  const lower = name.toLowerCase();
+  const fullPath = pathStack.length ? pathStack.join(' / ') + ' / ' + name : name;
+
+  if(lower.endsWith('.zip')){
+    try{
+      const zip = await JSZip.loadAsync(arrayBuffer);
+      const names = Object.keys(zip.files);
+      for(const relPath of names){
+        const zEntry = zip.files[relPath];
+        if(zEntry.dir) continue;
+        const buf = await zEntry.async('arraybuffer');
+        await processFileEntry(relPath.split('/').pop(), buf, materials, [...pathStack, name]);
+      }
+    }catch(e){ /* corrupt zip, skip */ }
+    return;
+  }
+  if(lower.endsWith('.tar') || lower.endsWith('.tar.gz') || lower.endsWith('.tgz')){
+    try{
+      let tarBuf = arrayBuffer;
+      if(lower.endsWith('.gz') || lower.endsWith('.tgz')){
+        tarBuf = pako.ungzip(new Uint8Array(arrayBuffer)).buffer;
+      }
+      const entries = parseTarBuffer(tarBuf);
+      for(const en of entries){
+        await processFileEntry(en.name.split('/').pop(), en.buffer, materials, [...pathStack, name]);
+      }
+    }catch(e){ /* corrupt tar, skip */ }
+    return;
+  }
+  if(lower.endsWith('.txt') || lower.endsWith('.md')){
+    try{
+      const text = new TextDecoder('utf-8').decode(arrayBuffer);
+      if(text.trim()) materials.push({ id: uid(), name, path: fullPath, content: text, importedAt: Date.now() });
+    }catch(e){}
+    return;
+  }
+  if(lower.endsWith('.docx')){
+    try{
+      const result = await mammoth.extractRawText({ arrayBuffer });
+      if(result.value.trim()) materials.push({ id: uid(), name, path: fullPath, content: result.value, importedAt: Date.now() });
+    }catch(e){}
+    return;
+  }
+  /* unsupported type inside archive (images etc.) - skip silently */
+}
+
+let materialsFolderFilter = '全部';
+
+function openFolderPickerSheet(existingFolders, defaultName, onConfirm){
+  const overlay = openModal(`
+    <div class="modal-header"><h2>放进哪个文件夹</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+    <div class="modal-body">
+      <label class="field-label">文件夹名称(留空则用"未分类")</label>
+      <input type="text" id="folderNameInput" list="folderNameList" placeholder="未分类" value="${escapeAttr(defaultName||'')}">
+      <datalist id="folderNameList">${existingFolders.map(f=>`<option value="${escapeAttr(f)}">`).join('')}</datalist>
+      ${existingFolders.length ? `
+        <label class="field-label">或选择已有</label>
+        <div class="chip-row">${existingFolders.map(f=>`<button class="choice-chip" data-pickfolder="${escapeAttr(f)}">${escapeHtml(f)}</button>`).join('')}</div>
+      ` : ''}
+      <div class="btn-row"><button class="btn primary block" id="confirmFolderBtn">确定</button></div>
+    </div>
+  `);
+  overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
+  overlay.querySelectorAll('[data-pickfolder]').forEach(b=>{
+    b.addEventListener('click', ()=>{ overlay.querySelector('#folderNameInput').value = b.dataset.pickfolder; });
+  });
+  overlay.querySelector('#confirmFolderBtn').addEventListener('click', ()=>{
+    const name = overlay.querySelector('#folderNameInput').value.trim() || '未分类';
+    closeModal(overlay);
+    onConfirm(name);
+  });
+}
+
+let materialsSelectMode = false;
+let materialsSelectedIds = new Set();
+
+function openTextMaterialEditor(){
+  dbGetAll('materials').then(all=>{
+    const folders = [...new Set(all.map(m=>m.folder || '未分类'))];
+    const overlay = openModal(`
+      <div class="modal-header"><h2>新建文字素材</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+      <div class="modal-body">
+        <label class="field-label">标题</label>
+        <input type="text" id="tmName" placeholder="给这段文字起个名字">
+        <label class="field-label">文件夹(留空则用"未分类")</label>
+        <input type="text" id="tmFolder" list="tmFolderList" placeholder="未分类" value="${escapeAttr(materialsFolderFilter!=='全部'?materialsFolderFilter:'')}">
+        <datalist id="tmFolderList">${folders.map(f=>`<option value="${escapeAttr(f)}">`).join('')}</datalist>
+        <label class="field-label">内容</label>
+        <textarea id="tmContent" style="min-height:220px;" placeholder="直接粘贴或输入文字..."></textarea>
+        <div class="btn-row"><button class="btn primary block" id="saveTextMaterialBtn">保存</button></div>
+      </div>
+    `);
+    overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
+    overlay.querySelector('#saveTextMaterialBtn').addEventListener('click', async ()=>{
+      const name = overlay.querySelector('#tmName').value.trim() || '未命名素材';
+      const folder = overlay.querySelector('#tmFolder').value.trim() || '未分类';
+      const content = overlay.querySelector('#tmContent').value;
+      if(!content.trim()){ showToast('内容不能为空'); return; }
+      await dbPut('materials', { id: uid(), name, path: name, folder, content, importedAt: Date.now() });
+      closeModal(overlay);
+      materialsFolderFilter = folder;
+      showToast('已新建素材');
+      await refreshMaterials();
+    });
+  });
+}
+
+function setMaterialsSelectMode(on){
+  materialsSelectMode = on;
+  materialsSelectedIds = new Set();
+  document.getElementById('toggleSelectModeBtn').textContent = on ? '取消' : '多选';
+  refreshMaterials();
+}
+
+async function copySelectedMaterials(materials){
+  const chosen = materials.filter(m=>materialsSelectedIds.has(m.id));
+  if(!chosen.length){ showToast('还没有选中任何素材'); return; }
+  const text = chosen.map(m=>'【'+m.name+'】\n'+m.content).join('\n\n');
+  await doCopyText(text);
+  showToast(`已复制 ${chosen.length} 条`);
+}
+async function exportSelectedMaterials(materials){
+  const chosen = materials.filter(m=>materialsSelectedIds.has(m.id));
+  if(!chosen.length){ showToast('还没有选中任何素材'); return; }
+  const zip = new JSZip();
+  const usedNames = new Set();
+  chosen.forEach(m=>{
+    let base = (m.name || 'untitled').replace(/[\\/:*?"<>|]/g, '_');
+    let fname = base + '.txt', n = 1;
+    while(usedNames.has(fname)){ fname = base + '_' + (n++) + '.txt'; }
+    usedNames.add(fname);
+    zip.file(fname, m.content);
+  });
+  const blob = await zip.generateAsync({type:'blob'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'materials-export-' + Date.now() + '.zip';
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+  showToast(`已导出 ${chosen.length} 条为 zip`);
+}
+async function deleteSelectedMaterials(materials){
+  const chosen = materials.filter(m=>materialsSelectedIds.has(m.id));
+  if(!chosen.length){ showToast('还没有选中任何素材'); return; }
+  if(!confirm(`删除选中的 ${chosen.length} 条素材?`)) return;
+  for(const m of chosen){ await dbDelete('materials', m.id); }
+  showToast('已删除');
+  setMaterialsSelectMode(false);
+}
+
+function initTools(){
+  document.getElementById('toolsFileInput').addEventListener('change', async (e)=>{
+    const files = Array.from(e.target.files || []);
+    if(!files.length) return;
+    const allExisting = await dbGetAll('materials');
+    const folders = [...new Set(allExisting.map(m=>m.folder || '未分类'))];
+    openFolderPickerSheet(folders, '', async (folderName)=>{
+      const statusEl = document.getElementById('toolsStatus');
+      statusEl.style.display = 'block';
+      statusEl.textContent = '正在解析...';
+      const materials = [];
+      for(const file of files){
+        const buf = await file.arrayBuffer();
+        await processFileEntry(file.name, buf, materials, []);
+      }
+      materials.forEach(m=> m.folder = folderName);
+      for(const m of materials){ await dbPut('materials', m); }
+      statusEl.style.display = 'none';
+      showToast(materials.length ? `导入了 ${materials.length} 条素材到"${folderName}"` : '没有解析出可用的文本内容');
+      materialsFolderFilter = folderName;
+      await refreshMaterials();
+    });
+    e.target.value = '';
+  });
+  document.getElementById('addTextMaterialBtn').addEventListener('click', openTextMaterialEditor);
+  document.getElementById('toggleSelectModeBtn').addEventListener('click', ()=>setMaterialsSelectMode(!materialsSelectMode));
+  document.getElementById('clearMaterialsBtn').addEventListener('click', async ()=>{
+    const scopeLabel = materialsFolderFilter === '全部' ? '全部素材' : `文件夹"${materialsFolderFilter}"`;
+    if(!confirm(`清空${scopeLabel}?此操作不可撤销。`)) return;
+    const all = await dbGetAll('materials');
+    const targets = materialsFolderFilter === '全部' ? all : all.filter(m=>(m.folder||'未分类')===materialsFolderFilter);
+    for(const m of targets){ await dbDelete('materials', m.id); }
+    showToast('已清空');
+    await refreshMaterials();
+  });
+}
+
+async function refreshMaterials(){
+  const all = (await dbGetAll('materials')).sort((a,b)=>b.importedAt - a.importedAt);
+  const folders = [...new Set(all.map(m=>m.folder || '未分类'))];
+  document.getElementById('materialCount').textContent = all.length;
+
+  const folderRow = document.getElementById('materialsFolderRow');
+  if(!all.length){
+    folderRow.innerHTML = '';
+  } else {
+    if(materialsFolderFilter !== '全部' && !folders.includes(materialsFolderFilter)) materialsFolderFilter = '全部';
+    folderRow.innerHTML = ['全部', ...folders].map(f=>`
+      <button class="choice-chip ${materialsFolderFilter===f?'selected':''}" data-folder="${escapeAttr(f)}">${escapeHtml(f)}</button>
+    `).join('');
+    folderRow.querySelectorAll('[data-folder]').forEach(b=>{
+      b.addEventListener('click', ()=>{ materialsFolderFilter = b.dataset.folder; refreshMaterials(); });
+    });
+  }
+
+  const materials = materialsFolderFilter === '全部' ? all : all.filter(m=>(m.folder||'未分类')===materialsFolderFilter);
+  const list = document.getElementById('materialsList');
+  const selectBar = document.getElementById('materialsSelectBar');
+
+  if(!materials.length){
+    list.innerHTML = `<div class="hint-text" style="margin-top:8px;">${all.length ? '这个文件夹还没有素材' : '还没有导入素材'}</div>`;
+    selectBar.style.display = 'none';
+    return;
+  }
+
+  list.innerHTML = materials.map(m=>`
+    <div class="entry-item" data-material="${m.id}" style="display:flex; align-items:center; gap:10px;">
+      ${materialsSelectMode ? `<input type="checkbox" data-checkbox="${m.id}" ${materialsSelectedIds.has(m.id)?'checked':''} style="width:18px; height:18px; flex-shrink:0;">` : ''}
+      <div style="flex:1; min-width:0;">
+        <div class="t">${escapeHtml(m.name)}</div>
+        <div class="m">${escapeHtml(m.folder||'未分类')} · ${escapeHtml(m.path)} · ${m.content.length} 字</div>
+      </div>
+      ${!materialsSelectMode ? `<button class="icon-btn" data-quickcopy="${m.id}" title="一键复制">${ICONS.copy}</button>` : ''}
+    </div>
+  `).join('');
+
+  if(materialsSelectMode){
+    list.querySelectorAll('[data-material]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        const id = el.dataset.material;
+        if(materialsSelectedIds.has(id)) materialsSelectedIds.delete(id); else materialsSelectedIds.add(id);
+        refreshMaterials();
+      });
+    });
+    selectBar.style.cssText = 'display:flex; gap:8px; position:sticky; bottom:0; background:var(--bg); padding:10px 0; border-top:1px solid var(--border); margin-top:8px;';
+    selectBar.innerHTML = `
+      <span class="hint-text" style="align-self:center;">已选 ${materialsSelectedIds.size} 项</span>
+      <button class="btn sm" style="margin-left:auto;" id="selCopyBtn">${ICONS.copy} 复制</button>
+      <button class="btn sm" id="selExportBtn">导出 zip</button>
+      <button class="btn sm danger" id="selDeleteBtn">删除</button>
+    `;
+    selectBar.querySelector('#selCopyBtn').addEventListener('click', ()=>copySelectedMaterials(materials));
+    selectBar.querySelector('#selExportBtn').addEventListener('click', ()=>exportSelectedMaterials(materials));
+    selectBar.querySelector('#selDeleteBtn').addEventListener('click', ()=>deleteSelectedMaterials(materials));
+  } else {
+    selectBar.style.display = 'none';
+    list.querySelectorAll('[data-material]').forEach(el=>{
+      el.addEventListener('click', (e)=>{
+        if(e.target.closest('[data-quickcopy]')) return;
+        openMaterialViewer(materials.find(m=>m.id===el.dataset.material));
+      });
+    });
+    list.querySelectorAll('[data-quickcopy]').forEach(btn=>{
+      btn.addEventListener('click', async (e)=>{
+        e.stopPropagation();
+        const m = materials.find(x=>x.id===btn.dataset.quickcopy);
+        await doCopyText(m.content);
+        showToast('已复制');
+      });
+    });
+  }
+}
+
+async function openMaterialViewer(material){
+  const allExisting = await dbGetAll('materials');
+  const folders = [...new Set(allExisting.map(m=>m.folder || '未分类'))];
+  const overlay = openModal(`
+    <div class="modal-header"><h2>${escapeHtml(material.name)}</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+    <div class="modal-body">
+      <div class="hint-text" style="margin-bottom:6px;">${escapeHtml(material.path)}</div>
+      <label class="field-label">文件夹</label>
+      <input type="text" id="moveFolderInput" list="moveFolderList" value="${escapeAttr(material.folder||'未分类')}">
+      <datalist id="moveFolderList">${folders.map(f=>`<option value="${escapeAttr(f)}">`).join('')}</datalist>
+      <textarea readonly style="min-height:40vh; margin-top:12px;">${escapeHtml(material.content)}</textarea>
+      <div class="btn-row">
+        <button class="btn primary block" id="copyMaterialBtn">一键复制</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn danger block" id="deleteMaterialBtn">删除这条素材</button>
+      </div>
+    </div>
+  `);
+  overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
+  overlay.querySelector('#moveFolderInput').addEventListener('change', async (e)=>{
+    material.folder = e.target.value.trim() || '未分类';
+    await dbPut('materials', material);
+    showToast('已移动');
+    await refreshMaterials();
+  });
+  overlay.querySelector('#copyMaterialBtn').addEventListener('click', async ()=>{
+    await doCopyText(material.content);
+    showToast('已复制');
+  });
+  overlay.querySelector('#deleteMaterialBtn').addEventListener('click', async ()=>{
+    if(!confirm('删除这条素材?')) return;
+    await dbDelete('materials', material.id);
+    closeModal(overlay);
+    showToast('已删除');
+    await refreshMaterials();
+  });
+}
+
+/* ================= Voice & Summary presets ================= */
+async function getPresetsByKind(kind){
+  const all = await dbGetAll('presets');
+  return all.filter(p=>p.kind===kind).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
+}
+function initPresets(){
+  document.getElementById('addVoicePresetBtn').addEventListener('click', ()=>openVoicePresetEditor(null));
+  document.getElementById('addSummaryPresetBtn').addEventListener('click', ()=>openSummaryPresetEditor(null));
+}
+async function refreshVoicePresets(){
+  const list = document.getElementById('voicePresetList');
+  const presets = await getPresetsByKind('voice');
+  const chars = await getAllCharacters();
+  if(!presets.length){ list.innerHTML = `<div class="hint-text">还没有语音预设</div>`; return; }
+  list.innerHTML = presets.map(p=>{
+    const ch = chars.find(c=>c.id===p.characterId);
+    return `
+      <div class="entry-item" data-voice="${p.id}">
+        <div class="t">${escapeHtml(p.name)}</div>
+        <div class="m">${ch ? escapeHtml(ch.name) + ' · ' : ''}${escapeHtml(p.endpoint||'未填写接口')}</div>
+      </div>
+    `;
+  }).join('');
+  list.querySelectorAll('[data-voice]').forEach(el=>{
+    el.addEventListener('click', ()=> openVoicePresetEditor(presets.find(p=>p.id===el.dataset.voice)));
+  });
+}
+async function refreshSummaryPresets(){
+  const list = document.getElementById('summaryPresetList');
+  const presets = await getPresetsByKind('summary');
+  if(!presets.length){ list.innerHTML = `<div class="hint-text">还没有总结预设</div>`; return; }
+  list.innerHTML = presets.map(p=>`
+    <div class="entry-item" data-summary="${p.id}">
+      <div class="t">${escapeHtml(p.name)}</div>
+      <div class="m">${escapeHtml(p.model||'')} ${p.model?'·':''} ${escapeHtml(p.endpoint||'未填写接口')}</div>
+    </div>
+  `).join('');
+  list.querySelectorAll('[data-summary]').forEach(el=>{
+    el.addEventListener('click', ()=> openSummaryPresetEditor(presets.find(p=>p.id===el.dataset.summary)));
+  });
+}
+async function openVoicePresetEditor(preset){
+  const isNew = !preset;
+  const chars = await getAllCharacters();
+  const overlay = openModal(`
+    <div class="modal-header"><h2>${isNew?'新建':'编辑'}语音预设</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+    <div class="modal-body">
+      <label class="field-label">预设名称</label>
+      <input type="text" id="vpName" value="${escapeAttr(preset?.name||'')}" placeholder="例如: 小明的声音">
+      <label class="field-label">对应角色(可选)</label>
+      <select id="vpCharacter">
+        <option value="">不指定</option>
+        ${chars.map(c=>`<option value="${c.id}" ${preset?.characterId===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
+      </select>
+      <label class="field-label">接口地址(Endpoint)</label>
+      <input type="text" id="vpEndpoint" value="${escapeAttr(preset?.endpoint||'')}" placeholder="https://...">
+      <label class="field-label">API Key</label>
+      <input type="text" id="vpApiKey" value="${escapeAttr(preset?.apiKey||'')}" placeholder="填你自己的密钥">
+      <label class="field-label">音色 / Voice ID</label>
+      <input type="text" id="vpVoiceId" value="${escapeAttr(preset?.voiceId||'')}" placeholder="接口要求的音色标识">
+      <label class="field-label">额外参数(可选,JSON)</label>
+      <textarea id="vpExtra" style="min-height:60px;" placeholder='{"speed":1.0}'>${escapeHtml(preset?.extraParams||'')}</textarea>
+      <label class="field-label">朗读提示词注入(可选)</label>
+      <textarea id="vpPrompt" style="min-height:60px;" placeholder="给支持指令的语音接口的语气/情感提示,例如: 用温柔、略带雀跃的语气朗读">${escapeHtml(preset?.promptInjection||'')}</textarea>
+      <div class="btn-row">
+        <button class="btn primary block" id="saveVoicePresetBtn">保存</button>
+      </div>
+      ${!isNew ? `<div class="btn-row"><button class="btn danger block" id="deleteVoicePresetBtn">删除预设</button></div>` : ''}
+    </div>
+  `);
+  overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
+  overlay.querySelector('#saveVoicePresetBtn').addEventListener('click', async ()=>{
+    const name = overlay.querySelector('#vpName').value.trim();
+    if(!name){ showToast('请填写预设名称'); return; }
+    const record = {
+      id: preset?.id || uid(), kind:'voice', name,
+      characterId: overlay.querySelector('#vpCharacter').value || '',
+      endpoint: overlay.querySelector('#vpEndpoint').value.trim(),
+      apiKey: overlay.querySelector('#vpApiKey').value.trim(),
+      voiceId: overlay.querySelector('#vpVoiceId').value.trim(),
+      extraParams: overlay.querySelector('#vpExtra').value.trim(),
+      promptInjection: overlay.querySelector('#vpPrompt').value,
+      createdAt: preset?.createdAt || Date.now()
+    };
+    await dbPut('presets', record);
+    closeModal(overlay);
+    showToast('已保存');
+    await refreshVoicePresets();
+  });
+  if(!isNew){
+    overlay.querySelector('#deleteVoicePresetBtn').addEventListener('click', async ()=>{
+      if(!confirm('删除这个语音预设?')) return;
+      await dbDelete('presets', preset.id);
+      closeModal(overlay);
+      showToast('已删除');
+      await refreshVoicePresets();
+    });
+  }
+}
+async function openSummaryPresetEditor(preset){
+  const isNew = !preset;
+  const overlay = openModal(`
+    <div class="modal-header"><h2>${isNew?'新建':'编辑'}总结预设</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+    <div class="modal-body">
+      <label class="field-label">预设名称</label>
+      <input type="text" id="spName" value="${escapeAttr(preset?.name||'')}" placeholder="例如: 长篇前文总结">
+      <label class="field-label">接口地址(Endpoint)</label>
+      <input type="text" id="spEndpoint" value="${escapeAttr(preset?.endpoint||'')}" placeholder="https://...">
+      <label class="field-label">API Key</label>
+      <input type="text" id="spApiKey" value="${escapeAttr(preset?.apiKey||'')}" placeholder="填你自己的密钥">
+      <label class="field-label">模型名称</label>
+      <input type="text" id="spModel" value="${escapeAttr(preset?.model||'')}" placeholder="例如: gpt-4o-mini">
+      <label class="field-label">总结提示词(Prompt)</label>
+      <textarea id="spPrompt" style="min-height:100px;" placeholder="例如: 请将以下正文压缩为300字以内的前情提要,保留关键人物关系与未解决的悬念">${escapeHtml(preset?.promptTemplate||'')}</textarea>
+      <div class="btn-row">
+        <button class="btn primary block" id="saveSummaryPresetBtn">保存</button>
+      </div>
+      ${!isNew ? `<div class="btn-row"><button class="btn danger block" id="deleteSummaryPresetBtn">删除预设</button></div>` : ''}
+    </div>
+  `);
+  overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
+  overlay.querySelector('#saveSummaryPresetBtn').addEventListener('click', async ()=>{
+    const name = overlay.querySelector('#spName').value.trim();
+    if(!name){ showToast('请填写预设名称'); return; }
+    const record = {
+      id: preset?.id || uid(), kind:'summary', name,
+      endpoint: overlay.querySelector('#spEndpoint').value.trim(),
+      apiKey: overlay.querySelector('#spApiKey').value.trim(),
+      model: overlay.querySelector('#spModel').value.trim(),
+      promptTemplate: overlay.querySelector('#spPrompt').value,
+      createdAt: preset?.createdAt || Date.now()
+    };
+    await dbPut('presets', record);
+    closeModal(overlay);
+    showToast('已保存');
+    await refreshSummaryPresets();
+  });
+  if(!isNew){
+    overlay.querySelector('#deleteSummaryPresetBtn').addEventListener('click', async ()=>{
+      if(!confirm('删除这个总结预设?')) return;
+      await dbDelete('presets', preset.id);
+      closeModal(overlay);
+      showToast('已删除');
+      await refreshSummaryPresets();
+    });
+  }
+}
+
+/* ================= Data backup ================= */
+function initDataBackup(){
+  document.getElementById('exportDataBtn').addEventListener('click', exportAllData);
+  document.getElementById('importDataInput').addEventListener('change', async (e)=>{
+    const file = e.target.files[0];
+    if(!file) return;
+    try{
+      const text = await file.text();
+      const data = JSON.parse(text);
+      await importAllData(data);
+      showToast('导入完成');
+    }catch(err){
+      showToast('导入失败,文件格式不对');
+    }
+    e.target.value = '';
+    await refreshShelf();
+    await refreshMaterials();
+    await refreshVoicePresets();
+    await refreshSummaryPresets();
+  });
+}
+async function exportAllData(){
+  const [characters, books, materials, presets] = await Promise.all([
+    dbGetAll('characters'), dbGetAll('books'), dbGetAll('materials'), dbGetAll('presets')
+  ]);
+  const payload = {
+    exportedAt: Date.now(),
+    theme: localStorage.getItem('mmr_theme') || 'light',
+    customCss: localStorage.getItem('mmr_custom_css') || '',
+    characters, books, materials, presets
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'meow-reader-backup-' + new Date().toISOString().slice(0,10) + '.json';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+async function importAllData(data){
+  if(data.theme) applyTheme(data.theme);
+  if(typeof data.customCss === 'string'){
+    localStorage.setItem('mmr_custom_css', data.customCss);
+    injectCustomCss(data.customCss);
+    const cssBox = document.getElementById('customCssInput');
+    if(cssBox) cssBox.value = data.customCss;
+  }
+  for(const c of (data.characters||[])) await dbPut('characters', c);
+  for(const b of (data.books||[])) await dbPut('books', b);
+  for(const m of (data.materials||[])) await dbPut('materials', m);
+  for(const p of (data.presets||[])) await dbPut('presets', p);
+}
+
+/* ================= Search ================= */
+let searchFacet = 'all';
+let searchFacetValue = null;
+function initSearch(){
+  document.getElementById('searchInput').addEventListener('input', ()=>renderSearch());
+  document.querySelectorAll('#searchFacetRow [data-facet]').forEach(b=>{
+    b.addEventListener('click', ()=>{
+      searchFacet = b.dataset.facet;
+      searchFacetValue = null;
+      document.querySelectorAll('#searchFacetRow [data-facet]').forEach(x=>x.classList.toggle('selected', x===b));
+      renderSearch();
+    });
+  });
+}
+async function renderSearch(){
+  const input = document.getElementById('searchInput');
+  const q = (input.value || '').trim().toLowerCase();
+  const books = await dbGetAll('books');
+  const facetEl = document.getElementById('searchFacetSelected');
+  const resultsEl = document.getElementById('searchResults');
+
+  if((searchFacet === 'category' || searchFacet === 'character' || searchFacet === 'tag') && !searchFacetValue){
+    if(searchFacet === 'category'){
+      const cats = [...new Set(books.map(b=>b.category).filter(Boolean))];
+      facetEl.innerHTML = cats.length ? `<div class="chip-row" style="margin:2px 0 12px;">${cats.map(c=>`<button class="choice-chip" data-pick="${escapeAttr(c)}">${escapeHtml(c)}</button>`).join('')}</div>` : `<div class="hint-text" style="margin:8px 0 14px;">还没有自定义分类</div>`;
+    } else if(searchFacet === 'character'){
+      const chars = await getAllCharacters();
+      facetEl.innerHTML = chars.length ? `<div class="chip-row" style="margin:2px 0 12px;">${chars.map(c=>`<button class="choice-chip" data-pick="${c.id}">${escapeHtml(c.name)}</button>`).join('')}</div>` : `<div class="hint-text" style="margin:8px 0 14px;">角色库还是空的</div>`;
+    } else {
+      const tags = [...new Set(books.flatMap(b=>b.tags||[]))];
+      facetEl.innerHTML = tags.length ? `<div class="chip-row" style="margin:2px 0 12px;">${tags.map(t=>`<button class="choice-chip" data-pick="${escapeAttr(t)}">#${escapeHtml(t)}</button>`).join('')}</div>` : `<div class="hint-text" style="margin:8px 0 14px;">还没有标签</div>`;
+    }
+    facetEl.querySelectorAll('[data-pick]').forEach(b=>{
+      b.addEventListener('click', ()=>{ searchFacetValue = b.dataset.pick; renderSearch(); });
+    });
+  } else if(searchFacetValue){
+    let label = searchFacetValue;
+    if(searchFacet === 'character'){
+      const chars = await getAllCharacters();
+      const c = chars.find(x=>x.id===searchFacetValue);
+      label = c ? c.name : label;
+    }
+    if(searchFacet === 'tag') label = '#' + label;
+    facetEl.innerHTML = `<div class="chip-row" style="margin:2px 0 12px;"><button class="choice-chip selected" data-clearpick>${escapeHtml(label)} ${ICONS.close}</button></div>`;
+    facetEl.querySelector('[data-clearpick]').addEventListener('click', ()=>{ searchFacetValue = null; renderSearch(); });
+  } else {
+    facetEl.innerHTML = '';
+  }
+
+  let candidates = books;
+  if(searchFacet === 'category' && searchFacetValue) candidates = books.filter(b=>b.category === searchFacetValue);
+  if(searchFacet === 'character' && searchFacetValue) candidates = books.filter(b=>(b.participants||[]).some(p=>p.characterId===searchFacetValue));
+  if(searchFacet === 'tag' && searchFacetValue) candidates = books.filter(b=>(b.tags||[]).includes(searchFacetValue));
+  if(searchFacet === 'extra') candidates = candidates.filter(b=>b.type==='extra');
+
+  const hits = [];
+  candidates.forEach(book=>{
+    const entries = book.type==='extra' ? (book.episodes||[]) : (book.chapters||[]);
+    let anyEntryMatch = false;
+    entries.forEach(en=>{
+      const match = !q || en.title.toLowerCase().includes(q) || (en.prompt||'').toLowerCase().includes(q);
+      if(match){ hits.push({book, entry:en}); anyEntryMatch = true; }
+    });
+    if(searchFacet !== 'extra' && !anyEntryMatch){
+      const bookMatch = !q ||
+        book.title.toLowerCase().includes(q) ||
+        (book.category||'').toLowerCase().includes(q) ||
+        (book.tags||[]).some(t=>t.toLowerCase().includes(q)) ||
+        (book.participants||[]).some(p=>(p.name||'').toLowerCase().includes(q));
+      if(bookMatch) hits.push({book, entry:null});
+    }
+  });
+
+  if(!hits.length){
+    resultsEl.innerHTML = `<div class="hint-text" style="margin-top:16px; text-align:center;">${q||searchFacetValue ? '没有找到匹配内容' : '输入关键字,或用上面的分类筛选'}</div>`;
+    return;
+  }
+  resultsEl.innerHTML = hits.map((h,i)=>{
+    const typeLabel = h.book.type==='extra' ? '番外' : '长篇';
+    const metaBits = [typeLabel];
+    if(h.entry && h.entry.prompt) metaBits.push(h.entry.prompt.slice(0,36));
+    else if(!h.entry && h.book.category) metaBits.push(h.book.category);
+    return `
+      <div class="entry-item" data-hit="${i}">
+        <div class="t">${escapeHtml(h.book.title)}${h.entry ? ' · ' + escapeHtml(h.entry.title) : ''}</div>
+        <div class="m">${metaBits.map(escapeHtml).join(' · ')}</div>
+      </div>
+    `;
+  }).join('');
+  resultsEl.querySelectorAll('[data-hit]').forEach(el=>{
+    el.addEventListener('click', ()=>{
+      const h = hits[parseInt(el.dataset.hit)];
+      openBookDetail(h.book.id, h.entry ? h.entry.id : undefined);
+    });
+  });
+}
+
+/* ================= Shelf render ================= */
+async function refreshShelf(){
+  const books = await dbGetAll('books');
+  books.sort((a,b)=> (b.updatedAt||0) - (a.updatedAt||0));
+  const grid = document.getElementById('shelfGrid');
+  const empty = document.getElementById('shelfEmpty');
+  document.getElementById('bookCountLabel').textContent = books.length ? books.length + ' 本' : '';
+  if(!books.length){ grid.innerHTML=''; empty.style.display='block'; return; }
+  empty.style.display='none';
+  grid.innerHTML = books.map(b=>{
+    const count = b.type==='extra' ? (b.episodes||[]).length : (b.chapters||[]).length;
+    const countLabel = b.type==='extra' ? count+' 篇番外' : count+' 章';
+    const chipColor = b.type==='extra' ? 'var(--tag-extra)' : 'var(--tag-novel)';
+    const names = (b.participants||[]).map(p=>p.name).slice(0,3).join(' / ');
+    return `
+      <div class="book-card" data-book="${b.id}">
+        <div class="book-cover">
+          <span class="book-type-chip" style="background:${chipColor};">${b.type==='extra'?'番外':'长篇'}</span>
+          ${b.cover ? `<img src="${b.cover}">` : `<span>${ICONS.bookOpen}</span>`}
+        </div>
+        <div class="body">
+          <div class="title">${escapeHtml(b.title)}</div>
+          <div class="meta">
+            <span class="mini-tag">${countLabel}</span>
+            ${b.category?`<span class="mini-tag">${escapeHtml(b.category)}</span>`:''}
+          </div>
+          <div class="meta" style="margin-top:4px;">${escapeHtml(names)}</div>
+        </div>
+      </div>`;
+  }).join('');
+  grid.querySelectorAll('.book-card').forEach(card=>{
+    card.addEventListener('click', ()=>openBookDetail(card.dataset.book));
+  });
+}
+
+/* ================= Book Detail ================= */
+async function openBookDetail(bookId, openEntryId){
+  const book = await dbGet('books', bookId);
+  if(!book) return;
+  const overlay = openModal(`<div id="detailMount" style="max-height:100%;"></div>`);
+  overlay.querySelector('.modal-sheet').style.maxHeight = '92vh';
+  paintDetail(overlay, book);
+  if(openEntryId) openReaderPage(overlay, book, openEntryId);
+}
+function paintDetail(overlay, book){
+  const mount = overlay.querySelector('#detailMount');
+  const entries = book.type==='extra' ? (book.episodes||[]) : (book.chapters||[]).slice().sort((a,b)=>a.order-b.order);
+  const roleList = (book.participants||[]).map(p=>`<span class="p-role-tag ${p.role}">${escapeHtml(p.name)}</span>`).join(' ');
+  mount.innerHTML = `
+    <div class="modal-header"><h2>书籍详情</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+    <div class="modal-body">
+      <div class="detail-cover-row">
+        <div class="detail-cover">${book.cover?`<img src="${book.cover}">`:ICONS.bookOpen}</div>
+        <div style="flex:1;">
+          <div class="detail-title">${escapeHtml(book.title)}</div>
+          <div class="meta" style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:6px;">${roleList}</div>
+          <div class="meta" style="display:flex; flex-wrap:wrap; gap:5px;">
+            ${(book.tags||[]).map(t=>`<span class="mini-tag">#${escapeHtml(t)}</span>`).join('')}
+          </div>
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn sm" id="editBookBtn">编辑信息</button>
+        <button class="btn sm danger" id="deleteBookBtn">删除书籍</button>
+      </div>
+      ${book.type==='novel' ? `
+        <div class="section-title">背景</div>
+        <div style="font-size:13px; line-height:1.6; color:var(--ink-soft); white-space:pre-wrap;">${escapeHtml(book.background||'(暂无背景设定)')}</div>
+      ` : ''}
+      <div class="section-title">${book.type==='extra'?'番外剧情':'章节'}(${entries.length})</div>
+      <div class="entry-list" id="entryList"></div>
+      <button class="add-participant-btn" id="addEntryBtn" style="margin-top:10px;">+ ${book.type==='extra'?'添加番外':'添加章节'}</button>
+    </div>
+  `;
+  const entryList = mount.querySelector('#entryList');
+  if(!entries.length){
+    entryList.innerHTML = `<div class="hint-text">还没有内容</div>`;
+  } else {
+    entryList.innerHTML = entries.map(en=>`
+      <div class="entry-item" data-entry="${en.id}">
+        <div class="t">${escapeHtml(en.title)}</div>
+        ${(book.type==='extra' && en.prompt) ? `<div class="m" style="color:var(--accent); margin-top:4px;">${escapeHtml(en.prompt.length>44?en.prompt.slice(0,44)+'…':en.prompt)}</div>` : ''}
+        <div class="m">${new Date(en.createdAt).toLocaleDateString()} · ${(en.content||'').replace(/<[^>]+>/g,'').length} 字</div>
+      </div>
+    `).join('');
+    entryList.querySelectorAll('.entry-item').forEach(item=>{
+      item.addEventListener('click', ()=>openReaderPage(overlay, book, item.dataset.entry));
+    });
+  }
+  mount.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
+  mount.querySelector('#deleteBookBtn').addEventListener('click', async ()=>{
+    if(!confirm('确定删除这本书吗?此操作不可撤销。')) return;
+    await dbDelete('books', book.id);
+    closeModal(overlay);
+    showToast('已删除');
+    await refreshShelf();
+  });
+  mount.querySelector('#editBookBtn').addEventListener('click', ()=>openEditBook(overlay, book));
+  mount.querySelector('#addEntryBtn').addEventListener('click', ()=>openAddEntry(overlay, book));
+}
+
+/* ================= Mixed text/HTML rendering ================= */
+// Splits raw content on blank lines. A block that begins with '<' is treated as
+// trusted embedded HTML/CSS and rendered as-is. Everything else is escaped and
+// wrapped as normal reading paragraphs (so plain prose reads like a real book).
+function renderContentHtml(raw){
+  if(!raw) return '';
+  const blocks = raw.split(/\n\s*\n/);
+  return blocks.map(block=>{
+    const trimmed = block.trim();
+    if(!trimmed) return '';
+    if(/^</.test(trimmed)) return trimmed;
+    return `<p>${escapeHtml(trimmed).replace(/\n/g,'<br>')}</p>`;
+  }).join('\n');
+}
+function currentThemeVars(){
+  const cs = getComputedStyle(document.documentElement);
+  const pick = (name)=> cs.getPropertyValue(name).trim();
+  return { bg:pick('--bg'), ink:pick('--ink'), inkSoft:pick('--ink-soft'), accent:pick('--accent'), accentSoft:pick('--accent-soft') };
+}
+function parseFontFamily(url){
+  try{
+    const m = url.match(/family=([^&]+)/);
+    if(!m) return '';
+    return decodeURIComponent(m[1]).split(':')[0].split(',')[0].replace(/\+/g,' ').trim();
+  }catch(e){ return ''; }
+}
+function buildReaderDoc(entry, book){
+  const t = currentThemeVars();
+  const rs = book.readerSettings || {};
+  const promptBlock = (book.type==='extra' && entry.prompt) ?
+    `<div class="epigraph">${escapeHtml(entry.prompt).replace(/\n/g,'<br>')}</div>` : '';
+  const bodyHtml = renderContentHtml(entry.content || '') || `<p style="color:${t.inkSoft};">(还没有正文内容)</p>`;
+  const bg = rs.background ? rs.background : t.bg;
+  const fontFamily = rs.fontUrl ? parseFontFamily(rs.fontUrl) : '';
+  const fontLink = rs.fontUrl ? `<link rel="stylesheet" href="${rs.fontUrl}">` : '';
+  const isPaginate = rs.pageEffect === 'paginate';
+
+  const baseCss = `
+    *{box-sizing:border-box;}
+    html,body{height:100%;}
+    body{
+      margin:0; background:${bg}; color:${t.ink};
+      font-family:${fontFamily ? `"${fontFamily}",` : ''}"Noto Serif SC",Georgia,serif; font-size:16.5px; line-height:1.95; word-break:break-word;
+      -webkit-tap-highlight-color:transparent;
+    }
+    p{margin:0 0 1.1em;}
+    img{max-width:100%; border-radius:8px;}
+    .epigraph{
+      font-family:"Noto Sans SC",-apple-system,sans-serif; font-size:12.5px; color:${t.inkSoft};
+      background:${t.accentSoft}; border-left:3px solid ${t.accent}; border-radius:0 8px 8px 0;
+      padding:12px 14px; margin:0 0 28px; line-height:1.7;
+    }
+    a{color:${t.accent};}
+    #pages .inner{ padding:30px 22px 40px; }
+    ${isPaginate ? `
+      html,body{ overflow:hidden; }
+      #pages{ overflow:hidden; transition:transform .28s ease; touch-action:pan-y; }
+    ` : ''}
+  `;
+
+  const script = isPaginate ? `
+  <script>
+  (function(){
+    var pageIndex = 0, totalPages = 1, pagesEl;
+    var touchStartX=null, touchStartY=null, moved=false;
+
+    function layout(){
+      var vw = window.innerWidth, vh = window.innerHeight;
+      pagesEl.style.transition = 'none';
+      pagesEl.style.transform = 'none';
+      pagesEl.style.columnWidth = '';
+      pagesEl.style.columnGap = '';
+      pagesEl.style.columnFill = '';
+      pagesEl.style.height = 'auto';
+      pagesEl.style.width = vw + 'px';
+      var fullHeight = pagesEl.scrollHeight;
+      totalPages = Math.max(1, Math.ceil(fullHeight / vh));
+      pagesEl.style.width = (totalPages*vw) + 'px';
+      pagesEl.style.height = vh + 'px';
+      pagesEl.style.columnWidth = vw + 'px';
+      pagesEl.style.columnGap = '0px';
+      pagesEl.style.columnFill = 'auto';
+      if(pageIndex > totalPages-1) pageIndex = totalPages-1;
+      requestAnimationFrame(function(){
+        pagesEl.style.transition = 'transform .28s ease';
+        applyTransform();
+      });
+    }
+    function applyTransform(){
+      pagesEl.style.transform = 'translateX(' + (-pageIndex*window.innerWidth) + 'px)';
+      parent.postMessage({mmReaderPage:true, index:pageIndex, total:totalPages}, '*');
+    }
+    function goTo(i){
+      if(i<0) i=0; if(i>totalPages-1) i=totalPages-1;
+      pageIndex = i;
+      applyTransform();
+    }
+    document.addEventListener('DOMContentLoaded', function(){ pagesEl = document.getElementById('pages'); layout(); });
+    window.addEventListener('load', function(){ if(pagesEl) layout(); });
+    window.addEventListener('resize', function(){ if(pagesEl) layout(); });
+    window.addEventListener('message', function(e){
+      if(!e.data) return;
+      if(e.data.mmGoPrev) goTo(pageIndex-1);
+      if(e.data.mmGoNext) goTo(pageIndex+1);
+    });
+    document.addEventListener('touchstart', function(e){
+      var tch = e.touches[0];
+      touchStartX = tch.clientX; touchStartY = tch.clientY; moved = false;
+    }, {passive:true});
+    document.addEventListener('touchmove', function(e){
+      if(touchStartX===null) return;
+      var tch = e.touches[0];
+      var dx = tch.clientX - touchStartX, dy = tch.clientY - touchStartY;
+      if(Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy)) moved = true;
+    }, {passive:true});
+    document.addEventListener('touchend', function(e){
+      if(touchStartX===null) return;
+      var tch = e.changedTouches[0];
+      var dx = tch.clientX - touchStartX;
+      touchStartX = null;
+      if(moved && Math.abs(dx) > 40){
+        if(dx < 0) goTo(pageIndex+1); else goTo(pageIndex-1);
+      }
+    }, {passive:true});
+    document.addEventListener('click', function(e){
+      if(moved){ moved = false; return; }
+      var el = e.target.closest('a,button,input,textarea,select,[onclick],[role="button"],summary');
+      if(el) return;
+      var x = e.clientX, w = window.innerWidth;
+      if(x < w*0.3){ goTo(pageIndex-1); return; }
+      if(x > w*0.7){ goTo(pageIndex+1); return; }
+      parent.postMessage({mmReaderToggle:true}, '*');
+    });
+  })();
+  <\/script>
+  ` : `
+  <script>
+  document.addEventListener('click', function(e){
+    var el = e.target.closest('a,button,input,textarea,select,[onclick],[role="button"],summary');
+    if(el) return;
+    parent.postMessage({mmReaderToggle:true}, '*');
+  });
+  <\/script>
+  `;
+
+  return `<!DOCTYPE html><html><head><meta charset="utf-8">${fontLink}<style>${baseCss}${rs.customCss||''}</style></head><body><div id="pages"><div class="inner">${promptBlock}${bodyHtml}</div></div></body>${script}</html>`;
+}
+
+/* ================= Copy to clipboard ================= */
+async function doCopyText(text){
+  try{ await navigator.clipboard.writeText(text); return; }catch(e){}
+  const ta = document.createElement('textarea');
+  ta.value = text; ta.style.position='fixed'; ta.style.opacity='0';
+  document.body.appendChild(ta); ta.select();
+  try{ document.execCommand('copy'); }catch(e2){}
+  document.body.removeChild(ta);
+}
+function composeCopyText(book, entry, includeExtra){
+  if(book.type === 'extra'){
+    const parts = [];
+    if(includeExtra && entry.prompt) parts.push('【番外要求】\n' + entry.prompt.trim());
+    parts.push(entry.content || '');
+    return parts.join('\n\n');
+  }
+  const parts = [];
+  if(includeExtra && book.background) parts.push('【背景设定】\n' + book.background.trim());
+  const chapters = (book.chapters||[]).slice().sort((a,b)=>a.order-b.order);
+  const idx = chapters.findIndex(c=>c.id===entry.id);
+  const upTo = idx>=0 ? chapters.slice(0, idx+1) : chapters;
+  upTo.forEach(c=> parts.push('【'+c.title+'】\n'+(c.content||'')));
+  return parts.join('\n\n');
+}
+function openCopySheet(book, entry){
+  const isExtra = book.type === 'extra';
+  const hasExtra = isExtra ? !!entry.prompt : !!book.background;
+  const label = isExtra ? '包含番外要求' : '包含背景设定';
+  const overlay = openModal(`
+    <div class="modal-header"><h2>一键复制</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+    <div class="modal-body">
+      ${!isExtra ? `<div class="hint-text" style="margin-bottom:12px;">将复制背景 + 从第一章到本章为止的正文,方便去续写下一章。</div>` : ''}
+      ${hasExtra ? `
+        <label style="display:flex; align-items:center; gap:8px; font-size:13px; margin:4px 0 16px;">
+          <input type="checkbox" id="includeExtraChk" checked style="width:16px; height:16px;">
+          ${label}
+        </label>
+      ` : `<div class="hint-text" style="margin-bottom:14px;">${isExtra?'这条番外还没有填写要求':'这本书还没有背景设定'}</div>`}
+      <button class="btn primary block" id="doCopyBtn">复制到剪贴板</button>
+    </div>
+  `);
+  overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
+  overlay.querySelector('#doCopyBtn').addEventListener('click', async ()=>{
+    const chk = overlay.querySelector('#includeExtraChk');
+    const text = composeCopyText(book, entry, chk ? chk.checked : false);
+    await doCopyText(text);
+    closeModal(overlay);
+    showToast('已复制');
+  });
+}
+
+/* ================= Reader appearance settings ================= */
+function openReaderSettingsSheet(book, onSaved){
+  const rs = book.readerSettings || (book.readerSettings = { background:'', pageEffect:'scroll', customCss:'', fontUrl:'' });
+  const presets = [
+    {name:'跟随主题', value:''},
+    {name:'米白', value:'#F3ECDF'},
+    {name:'淡粉', value:'#F8E7EA'},
+    {name:'薄荷', value:'#E4F0EA'},
+    {name:'墨蓝', value:'#1C2430'},
+    {name:'纯黑', value:'#101012'},
+  ];
+  const overlay = openModal(`
+    <div class="modal-header"><h2>阅读设置</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+    <div class="modal-body">
+      <label class="field-label">阅读方式</label>
+      <div class="chip-row">
+        <button class="choice-chip" data-effect="scroll">${ICONS.scrollMode} 竖屏滑动</button>
+        <button class="choice-chip" data-effect="paginate">${ICONS.pageMode} 左右翻页</button>
+      </div>
+      <label class="field-label">背景</label>
+      <div class="bg-swatch-row" id="bgSwatchRow"></div>
+      <label class="field-label">字体链接(可选,如 Google Fonts CSS 链接)</label>
+      <input type="text" id="fontUrlInput" placeholder="https://fonts.googleapis.com/css2?family=..." value="${escapeAttr(rs.fontUrl||'')}">
+      <label class="field-label">注入自定义 CSS(可选)</label>
+      <textarea id="customCssInputR" style="min-height:90px;" placeholder="例如: body{ letter-spacing:.5px; }">${escapeHtml(rs.customCss||'')}</textarea>
+      <div class="btn-row"><button class="btn primary block" id="saveReaderSettingsBtn">保存</button></div>
+    </div>
+  `);
+  overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
+
+  let chosenBg = rs.background || '';
+  const swatchRow = overlay.querySelector('#bgSwatchRow');
+  function paintSwatches(){
+    swatchRow.innerHTML = presets.map(p=>`
+      <div class="bg-swatch ${chosenBg===p.value?'selected':''}" data-bg="${escapeAttr(p.value)}" style="background:${p.value||'var(--surface-2)'};" title="${p.name}"></div>
+    `).join('') + `<label class="bg-upload-swatch" id="bgUploadSwatch">+<input type="file" accept="image/*" id="bgUploadInput" style="display:none;"></label>`;
+    swatchRow.querySelectorAll('[data-bg]').forEach(sw=>{
+      sw.addEventListener('click', ()=>{ chosenBg = sw.dataset.bg; paintSwatches(); });
+    });
+    swatchRow.querySelector('#bgUploadInput').addEventListener('change', (e)=>{
+      const f = e.target.files[0]; if(!f) return;
+      const rd = new FileReader();
+      rd.onload = ()=>{ chosenBg = `url(${rd.result}) center/cover no-repeat`; paintSwatches(); };
+      rd.readAsDataURL(f);
+    });
+  }
+  paintSwatches();
+
+  let chosenEffect = rs.pageEffect === 'paginate' ? 'paginate' : 'scroll';
+  function paintEffectChips(){
+    overlay.querySelectorAll('[data-effect]').forEach(b=>{
+      b.classList.toggle('selected', b.dataset.effect === chosenEffect);
+    });
+  }
+  paintEffectChips();
+  overlay.querySelectorAll('[data-effect]').forEach(b=>{
+    b.addEventListener('click', ()=>{ chosenEffect = b.dataset.effect; paintEffectChips(); });
+  });
+
+  overlay.querySelector('#saveReaderSettingsBtn').addEventListener('click', async ()=>{
+    book.readerSettings = {
+      background: chosenBg,
+      pageEffect: chosenEffect,
+      customCss: overlay.querySelector('#customCssInputR').value,
+      fontUrl: overlay.querySelector('#fontUrlInput').value.trim(),
+      voicePresetId: rs.voicePresetId || '',
+      summaryPresetId: rs.summaryPresetId || ''
+    };
+    book.updatedAt = Date.now();
+    await dbPut('books', book);
+    closeModal(overlay);
+    showToast('阅读设置已保存');
+    onSaved && onSaved();
+  });
+}
+
+/* ================= Fullscreen reading page ================= */
+function openReaderPage(parentOverlay, book, entryId){
+  const list = book.type==='extra' ? book.episodes : book.chapters;
+  const entry = list.find(e=>e.id===entryId);
+  if(!entry) return;
+
+  const root = document.getElementById('modalRoot');
+  const reader = document.createElement('div');
+  reader.className = 'reader-overlay';
+  reader.innerHTML = `
+    <div class="reader-topbar" id="readerTopbar">
+      <button class="icon-btn" data-r-back>${ICONS.back}</button>
+      <div class="r-title">${escapeHtml(entry.title)}</div>
+      <button class="icon-btn" data-r-collapse>${ICONS.chevronUp}</button>
+      <button class="icon-btn" data-r-more>${ICONS.more}</button>
+    </div>
+    <button class="reader-peek" id="readerPeek">${ICONS.chevronDown}</button>
+    <div class="reader-body" id="readerBody"></div>
+    <div class="reader-pagenav" id="readerPagenav" style="display:none;">
+      <button data-r-prev>${ICONS.chevronLeft}</button>
+      <span id="pageIndicator">1 / 1</span>
+      <button data-r-next>${ICONS.chevronRight}</button>
+    </div>
+  `;
+  root.appendChild(reader);
+  requestAnimationFrame(()=>reader.classList.add('open'));
+
+  const topbar = reader.querySelector('#readerTopbar');
+  const peek = reader.querySelector('#readerPeek');
+  const pagenav = reader.querySelector('#readerPagenav');
+
+  function setCollapsed(state){
+    topbar.classList.toggle('collapsed', state);
+    peek.classList.toggle('show', state);
+    if((book.readerSettings||{}).pageEffect === 'paginate'){
+      pagenav.classList.toggle('collapsed', state);
+    }
+  }
+  reader.querySelector('[data-r-collapse]').addEventListener('click', ()=>setCollapsed(true));
+  peek.addEventListener('click', ()=>setCollapsed(false));
+
+  function onMessage(e){
+    if(!e.data) return;
+    if(e.data.mmReaderToggle){ setCollapsed(!topbar.classList.contains('collapsed')); }
+    if(e.data.mmReaderPage){
+      const ind = reader.querySelector('#pageIndicator');
+      if(ind) ind.textContent = (e.data.index+1) + ' / ' + e.data.total;
+    }
+  }
+  window.addEventListener('message', onMessage);
+
+  function closeReader(){
+    window.removeEventListener('message', onMessage);
+    reader.classList.remove('open');
+    setTimeout(()=>reader.remove(), 260);
+  }
+  reader.querySelector('[data-r-back]').addEventListener('click', closeReader);
+
+  function paintRendered(){
+    setCollapsed(false);
+    const body = reader.querySelector('#readerBody');
+    body.innerHTML = `<iframe id="readerIframe" sandbox="allow-scripts" srcdoc="${escapeAttr(buildReaderDoc(entry, book))}"></iframe>`;
+    const isPaginate = (book.readerSettings||{}).pageEffect === 'paginate';
+    pagenav.style.display = isPaginate ? 'flex' : 'none';
+    pagenav.classList.remove('collapsed');
+  }
+
+  function paintEdit(){
+    setCollapsed(false);
+    const body = reader.querySelector('#readerBody');
+    pagenav.style.display = 'none';
+    const isExtra = book.type === 'extra';
+    body.innerHTML = `
+      <div class="reader-edit-body">
+        <label class="field-label">标题</label>
+        <input type="text" id="rTitle" value="${escapeAttr(entry.title)}">
+        ${isExtra ? `
+          <label class="field-label">番外要求(剧情主题/设定要求)</label>
+          <textarea id="rPrompt" style="min-height:70px;">${escapeHtml(entry.prompt || '')}</textarea>
+        ` : ''}
+        <label class="field-label">正文</label>
+        <textarea id="rContent" style="min-height:260px;">${escapeHtml(entry.content || '')}</textarea>
+        <div class="hint-text">大段文字会自动按空行分段正常阅读;以 "&lt;" 开头的独立段落会被当作HTML/CSS原样渲染(可用来插入小组件或整段自定义HTML)。</div>
+        <div class="btn-row">
+          <button class="btn primary block" id="rSaveBtn">保存并预览</button>
+        </div>
+      </div>
+    `;
+    body.querySelector('#rSaveBtn').addEventListener('click', async ()=>{
+      entry.title = body.querySelector('#rTitle').value.trim() || entry.title;
+      if(isExtra) entry.prompt = body.querySelector('#rPrompt').value;
+      entry.content = body.querySelector('#rContent').value;
+      book.updatedAt = Date.now();
+      await dbPut('books', book);
+      reader.querySelector('.r-title').textContent = entry.title;
+      paintRendered();
+      showToast('已保存');
+      if(parentOverlay) paintDetail(parentOverlay, book);
+      await refreshShelf();
+    });
+  }
+
+  reader.querySelector('[data-r-more]').addEventListener('click', ()=>{
+    const sheet = openModal(`
+      <div class="modal-header"><h2>更多</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+      <div class="modal-body">
+        <div class="action-sheet-item" id="moreEdit"><div class="glyph">${ICONS.edit}</div><div class="txt"><div class="t1">编辑正文</div></div></div>
+        <div class="action-sheet-item" id="moreSettings"><div class="glyph">${ICONS.gear}</div><div class="txt"><div class="t1">阅读设置</div><div class="t2">背景 / 翻页方式 / 自定义CSS / 字体</div></div></div>
+        <div class="action-sheet-item" id="moreCopy"><div class="glyph">${ICONS.copy}</div><div class="txt"><div class="t1">一键复制</div><div class="t2">复制正文,方便去续写</div></div></div>
+        <div class="action-sheet-item" id="moreDelete"><div class="glyph">${ICONS.trash}</div><div class="txt"><div class="t1" style="color:var(--danger);">删除这条</div></div></div>
+      </div>
+    `);
+    sheet.querySelector('[data-close]').addEventListener('click', ()=>closeModal(sheet));
+    sheet.querySelector('#moreEdit').addEventListener('click', ()=>{ closeModal(sheet); paintEdit(); });
+    sheet.querySelector('#moreSettings').addEventListener('click', ()=>{
+      closeModal(sheet);
+      openReaderSettingsSheet(book, ()=> paintRendered());
+    });
+    sheet.querySelector('#moreCopy').addEventListener('click', ()=>{ closeModal(sheet); openCopySheet(book, entry); });
+    sheet.querySelector('#moreDelete').addEventListener('click', async ()=>{
+      closeModal(sheet);
+      if(!confirm('删除这条内容?')) return;
+      const idx = list.findIndex(e=>e.id===entryId);
+      list.splice(idx,1);
+      book.updatedAt = Date.now();
+      await dbPut('books', book);
+      closeReader();
+      showToast('已删除');
+      if(parentOverlay) paintDetail(parentOverlay, book);
+      await refreshShelf();
+    });
+  });
+
+  reader.querySelector('[data-r-prev]').addEventListener('click', ()=>{
+    const ifr = reader.querySelector('#readerIframe');
+    if(ifr) ifr.contentWindow.postMessage({mmGoPrev:true}, '*');
+  });
+  reader.querySelector('[data-r-next]').addEventListener('click', ()=>{
+    const ifr = reader.querySelector('#readerIframe');
+    if(ifr) ifr.contentWindow.postMessage({mmGoNext:true}, '*');
+  });
+
+  paintRendered();
+}
+
+
+function openAddEntry(parentOverlay, book){
+  const overlay = openModal(`
+    <div class="modal-header"><h2>${book.type==='extra'?'添加番外':'添加章节'}</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+    <div class="modal-body" id="addEntryBody"></div>
+  `);
+  overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
+  const body = overlay.querySelector('#addEntryBody');
+  if(book.type==='extra'){
+    body.innerHTML = `
+      <label class="field-label">番外要求(剧情主题/设定要求)</label>
+      <textarea id="epPrompt" style="min-height:70px;" placeholder="例如: 生成一段雨天便利店偶遇的番外..."></textarea>
+      <label class="field-label">番外剧情标题</label>
+      <input type="text" id="epTitle">
+      <label class="field-label">正文</label>
+      <textarea id="epContent" style="min-height:160px;"></textarea>
+      <div class="btn-row"><button class="btn primary block" id="confirmAdd">添加</button></div>
+    `;
+    body.querySelector('#confirmAdd').addEventListener('click', async ()=>{
+      const title = body.querySelector('#epTitle').value.trim() || '未命名番外';
+      const prompt = body.querySelector('#epPrompt').value;
+      const content = body.querySelector('#epContent').value;
+      book.episodes = book.episodes || [];
+      book.episodes.push({ id: uid(), title, prompt, content, createdAt: Date.now() });
+      book.updatedAt = Date.now();
+      await dbPut('books', book);
+      closeModal(overlay);
+      paintDetail(parentOverlay, book);
+      await refreshShelf();
+    });
+  } else {
+    const nextOrder = (book.chapters||[]).length + 1;
+    body.innerHTML = `
+      <label class="field-label">章节标题</label>
+      <input type="text" id="chTitle" placeholder="第 ${nextOrder} 章 ...">
+      <label class="field-label">内容</label>
+      <textarea id="chContent" style="min-height:160px;"></textarea>
+      <div class="btn-row"><button class="btn primary block" id="confirmAdd">添加</button></div>
+    `;
+    body.querySelector('#confirmAdd').addEventListener('click', async ()=>{
+      const title = body.querySelector('#chTitle').value.trim() || ('第 '+nextOrder+' 章');
+      const content = body.querySelector('#chContent').value;
+      book.chapters = book.chapters || [];
+      book.chapters.push({ id: uid(), title, content, order: nextOrder, createdAt: Date.now() });
+      book.updatedAt = Date.now();
+      await dbPut('books', book);
+      closeModal(overlay);
+      paintDetail(parentOverlay, book);
+      await refreshShelf();
+    });
+  }
+}
+
+function openEditBook(parentOverlay, book){
+  const overlay = openModal(`
+    <div class="modal-header"><h2>编辑信息</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+    <div class="modal-body">
+      <label class="field-label">封面</label>
+      <label class="cover-upload" id="editCoverBox">
+        ${book.cover?`<img src="${book.cover}">`:'点击上传'}
+        <input type="file" accept="image/*" id="editCoverInput" style="display:none;">
+      </label>
+      <label class="field-label">书名</label>
+      <input type="text" id="editTitle" value="${escapeAttr(book.title)}">
+      <label class="field-label">标签(逗号分隔)</label>
+      <input type="text" id="editTags" value="${escapeAttr((book.tags||[]).join(', '))}">
+      <label class="field-label">分类</label>
+      <input type="text" id="editCategory" value="${escapeAttr(book.category||'')}">
+      <div class="section-title">参与角色</div>
+      <div class="participant-list" id="editPList"></div>
+      <button class="add-participant-btn" id="editAddParticipant" style="margin-top:10px;">+ 添加角色</button>
+      <div class="btn-row"><button class="btn primary block" id="saveBookBtn">保存</button></div>
+    </div>
+  `);
+  overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
+  overlay.querySelector('#editCoverInput').addEventListener('change', (e)=>{
+    const f = e.target.files[0]; if(!f) return;
+    const reader = new FileReader();
+    reader.onload = ()=>{
+      const img = new Image();
+      img.onload = ()=>{
+        const canvas = document.createElement('canvas');
+        const scale = Math.min(1, 480/img.width);
+        canvas.width = img.width*scale; canvas.height = img.height*scale;
+        canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);
+        book.cover = canvas.toDataURL('image/jpeg',0.85);
+        overlay.querySelector('#editCoverBox').innerHTML = `<img src="${book.cover}"><input type="file" accept="image/*" id="editCoverInput" style="display:none;">`;
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(f);
+  });
+  function paintEditParticipants(){
+    const list = overlay.querySelector('#editPList');
+    list.innerHTML = (book.participants||[]).map((p,idx)=>`
+      <div class="participant-row">
+        <div class="p-avatar">${avatarOrInitial(p)}</div>
+        <div class="p-info"><div class="p-name">${escapeHtml(p.name)}</div></div>
+        <span class="p-role-tag ${p.role}">${p.role==='char'?'char':'user'}</span>
+        <button class="icon-btn" data-rm="${idx}">${ICONS.close}</button>
+      </div>
+    `).join('') || `<div class="hint-text">暂无角色</div>`;
+    list.querySelectorAll('[data-rm]').forEach(b=>{
+      b.addEventListener('click', ()=>{ book.participants.splice(parseInt(b.dataset.rm),1); paintEditParticipants(); });
+    });
+  }
+  paintEditParticipants();
+  overlay.querySelector('#editAddParticipant').addEventListener('click', ()=>{
+    openAddParticipantSheet((p)=>{
+      book.participants = book.participants || [];
+      book.participants.push(p);
+      paintEditParticipants();
+    });
+  });
+  overlay.querySelector('#saveBookBtn').addEventListener('click', async ()=>{
+    book.title = overlay.querySelector('#editTitle').value.trim() || book.title;
+    book.tags = overlay.querySelector('#editTags').value.split(',').map(s=>s.trim()).filter(Boolean);
+    book.category = overlay.querySelector('#editCategory').value.trim();
+    book.updatedAt = Date.now();
+    await dbPut('books', book);
+    closeModal(overlay);
+    showToast('已保存');
+    paintDetail(parentOverlay, book);
+    await refreshShelf();
+  });
+}
+
+/* ================= Init ================= */
+(async function init(){
+  initTheme();
+  initTabs();
+  initFab();
+  initSearch();
+  initTools();
+  initPresets();
+  initDataBackup();
+  await refreshShelf();
+  await refreshMaterials();
+  await refreshVoicePresets();
+  await refreshSummaryPresets();
+})();
+</script>
+</body>
+</html>
