@@ -271,7 +271,7 @@ textarea{resize:vertical; min-height:80px; line-height:1.55;}
 /* misc */
 .toast{
   position:fixed; left:50%; bottom:100px; transform:translateX(-50%); background:var(--ink); color:var(--bg);
-  padding:9px 16px; border-radius:20px; font-size:12.5px; z-index:100; opacity:0; transition:opacity .25s ease, transform .25s ease;
+  padding:9px 16px; border-radius:20px; font-size:12.5px; z-index:9999; opacity:0; transition:opacity .25s ease, transform .25s ease;
   pointer-events:none;
 }
 .toast.show{opacity:1;}
@@ -578,10 +578,24 @@ function switchTab(tab){
 }
 
 /* ================= Modal helpers ================= */
+/* Overlays (modals + the fullscreen reader) share one stacking counter so that
+   whatever was opened last always sits on top: the reader must cover the book
+   detail sheet it was launched from, while sheets opened from inside the reader
+   must in turn cover the reader. */
+function nextOverlayZ(){
+  const root = document.getElementById('modalRoot');
+  let top = 65;
+  if(root) root.querySelectorAll('.modal-overlay, .reader-overlay').forEach(el=>{
+    const z = parseInt(el.style.zIndex, 10);
+    if(!isNaN(z) && z > top) top = z;
+  });
+  return top + 5;
+}
 function openModal(innerHtml, opts={}){
   const root = document.getElementById('modalRoot');
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
+  overlay.style.zIndex = nextOverlayZ();
   overlay.innerHTML = `<div class="modal-sheet">${innerHtml}</div>`;
   root.appendChild(overlay);
   requestAnimationFrame(()=>overlay.classList.add('open'));
@@ -1748,7 +1762,15 @@ function parseFontFamily(url){
     return decodeURIComponent(m[1]).split(':')[0].split(',')[0].replace(/\+/g,' ').trim();
   }catch(e){ return ''; }
 }
-function buildReaderDoc(entry, book){
+function safeAreaInset(side){
+  const probe = document.createElement('div');
+  probe.style.cssText = `position:fixed; left:0; bottom:0; width:0; pointer-events:none; visibility:hidden; height:env(safe-area-inset-${side},0px);`;
+  document.body.appendChild(probe);
+  const h = probe.offsetHeight || 0;
+  probe.remove();
+  return h;
+}
+function buildReaderDoc(entry, book, insets){
   const t = currentThemeVars();
   const rs = book.readerSettings || {};
   const promptBlock = (book.type==='extra' && entry.prompt) ?
@@ -1758,6 +1780,16 @@ function buildReaderDoc(entry, book){
   const fontFamily = rs.fontUrl ? parseFontFamily(rs.fontUrl) : '';
   const fontLink = rs.fontUrl ? `<link rel="stylesheet" href="${rs.fontUrl}">` : '';
   const isPaginate = rs.pageEffect === 'paginate';
+
+  /* The reader chrome (topbar / page nav) floats above the iframe, so the
+     document has to reserve room for it or the first and last lines end up
+     hidden underneath. The vertical padding lives on #pages rather than on
+     .inner because multicol splits block-direction padding between the first
+     and last fragment only — putting it on the multicol container instead
+     gives every page the same top and bottom margin. Inline-direction padding
+     does repeat per fragment, so that stays on .inner. */
+  const padTop = Math.max(20, (insets && insets.top) || 0) + 16;
+  const padBottom = Math.max(20, (insets && insets.bottom) || 0) + 16;
 
   const baseCss = `
     *{box-sizing:border-box;}
@@ -1775,7 +1807,9 @@ function buildReaderDoc(entry, book){
       padding:12px 14px; margin:0 0 28px; line-height:1.7;
     }
     a{color:${t.accent};}
-    #pages .inner{ padding:30px 22px 40px; }
+    #pages{ padding:${padTop}px 0 ${padBottom}px; }
+    #pages .inner{ padding:0 22px; }
+    #pages .inner > *{ max-width:100%; }
     ${isPaginate ? `
       html,body{ overflow:hidden; }
       #pages{ overflow:hidden; transition:transform .28s ease; touch-action:pan-y; }
@@ -1785,9 +1819,31 @@ function buildReaderDoc(entry, book){
   const script = isPaginate ? `
   <script>
   (function(){
-    var pageIndex = 0, totalPages = 1, pagesEl;
+    var pageIndex = 0, totalPages = 1, pagesEl, innerEl;
+    var PAD_TOP = ${padTop}, PAD_BOTTOM = ${padBottom};
     var touchStartX=null, touchStartY=null, moved=false;
 
+    function applyColumns(vw, vh, n){
+      pagesEl.style.width = (n*vw) + 'px';
+      pagesEl.style.height = vh + 'px';
+      pagesEl.style.columnWidth = vw + 'px';
+      pagesEl.style.columnGap = '0px';
+      pagesEl.style.columnFill = 'auto';
+    }
+    // Content that does not fit spills into "overflow columns" past the
+    // declared width, so the furthest right edge of any child tells us how
+    // many pages the text really needs — which is always >= the naive
+    // height/viewport estimate, because lines cannot be split across columns.
+    function pagesUsed(vw){
+      var els = innerEl.children, n = 1;
+      for(var i=0;i<els.length;i++){
+        var r = els[i].getBoundingClientRect();
+        if(!r.width && !r.height) continue;
+        var c = Math.ceil((r.right - 0.5) / vw);
+        if(c > n) n = c;
+      }
+      return n;
+    }
     function layout(){
       var vw = window.innerWidth, vh = window.innerHeight;
       pagesEl.style.transition = 'none';
@@ -1797,14 +1853,18 @@ function buildReaderDoc(entry, book){
       pagesEl.style.columnFill = '';
       pagesEl.style.height = 'auto';
       pagesEl.style.width = vw + 'px';
-      var fullHeight = pagesEl.scrollHeight;
-      totalPages = Math.max(1, Math.ceil(fullHeight / vh));
-      pagesEl.style.width = (totalPages*vw) + 'px';
-      pagesEl.style.height = vh + 'px';
-      pagesEl.style.columnWidth = vw + 'px';
-      pagesEl.style.columnGap = '0px';
-      pagesEl.style.columnFill = 'auto';
+
+      var pageH = Math.max(60, vh - PAD_TOP - PAD_BOTTOM);
+      var guess = Math.max(1, Math.ceil(innerEl.offsetHeight / pageH));
+      totalPages = guess;
+      for(var pass=0; pass<6; pass++){
+        applyColumns(vw, vh, totalPages);
+        var needed = pagesUsed(vw);
+        if(needed === totalPages) break;
+        totalPages = Math.max(1, needed);
+      }
       if(pageIndex > totalPages-1) pageIndex = totalPages-1;
+      if(pageIndex < 0) pageIndex = 0;
       requestAnimationFrame(function(){
         pagesEl.style.transition = 'transform .28s ease';
         applyTransform();
@@ -1819,13 +1879,25 @@ function buildReaderDoc(entry, book){
       pageIndex = i;
       applyTransform();
     }
-    document.addEventListener('DOMContentLoaded', function(){ pagesEl = document.getElementById('pages'); layout(); });
-    window.addEventListener('load', function(){ if(pagesEl) layout(); });
+    function boot(){
+      if(pagesEl) return;
+      pagesEl = document.getElementById('pages');
+      innerEl = pagesEl.querySelector('.inner');
+      layout();
+    }
+    document.addEventListener('DOMContentLoaded', boot);
+    // Webfonts and images change the content height after DOMContentLoaded,
+    // so re-measure once everything has actually loaded.
+    window.addEventListener('load', function(){ boot(); layout(); });
+    if(document.fonts && document.fonts.ready){
+      document.fonts.ready.then(function(){ if(pagesEl) layout(); });
+    }
     window.addEventListener('resize', function(){ if(pagesEl) layout(); });
     window.addEventListener('message', function(e){
       if(!e.data) return;
       if(e.data.mmGoPrev) goTo(pageIndex-1);
       if(e.data.mmGoNext) goTo(pageIndex+1);
+      if(e.data.mmRelayout && pagesEl) layout();
     });
     document.addEventListener('touchstart', function(e){
       var tch = e.touches[0];
@@ -2006,6 +2078,7 @@ function openReaderPage(parentOverlay, book, entryId){
   const root = document.getElementById('modalRoot');
   const reader = document.createElement('div');
   reader.className = 'reader-overlay';
+  reader.style.zIndex = nextOverlayZ();
   reader.innerHTML = `
     <div class="reader-topbar" id="readerTopbar">
       <button class="icon-btn" data-r-back>${ICONS.back}</button>
@@ -2058,10 +2131,16 @@ function openReaderPage(parentOverlay, book, entryId){
   function paintRendered(){
     setCollapsed(false);
     const body = reader.querySelector('#readerBody');
-    body.innerHTML = `<iframe id="readerIframe" sandbox="allow-scripts" srcdoc="${escapeAttr(buildReaderDoc(entry, book))}"></iframe>`;
     const isPaginate = (book.readerSettings||{}).pageEffect === 'paginate';
     pagenav.style.display = isPaginate ? 'flex' : 'none';
     pagenav.classList.remove('collapsed');
+    // The iframe fills the whole overlay and the chrome floats on top of it,
+    // so measure the chrome now and let the document reserve that much room.
+    const insets = {
+      top: topbar.offsetHeight || 54,
+      bottom: isPaginate ? (pagenav.offsetHeight || 48) : safeAreaInset('bottom')
+    };
+    body.innerHTML = `<iframe id="readerIframe" sandbox="allow-scripts" srcdoc="${escapeAttr(buildReaderDoc(entry, book, insets))}"></iframe>`;
   }
 
   function paintEdit(){
