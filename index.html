@@ -268,6 +268,47 @@ textarea{resize:vertical; min-height:80px; line-height:1.55;}
 }
 
 
+/* shelf views */
+.view-switch{
+  display:flex; gap:4px; padding:4px; margin:12px 0 4px;
+  background:var(--surface-2); border:1px solid var(--border); border-radius:11px;
+}
+.view-switch button{
+  flex:1; padding:7px 4px; border:none; background:none; border-radius:8px;
+  font-size:12.5px; color:var(--ink-soft); cursor:pointer; white-space:nowrap;
+}
+.view-switch button.on{background:var(--bg); color:var(--ink); font-weight:600; box-shadow:0 1px 3px rgba(0,0,0,.07);}
+.group-head{
+  display:flex; align-items:center; gap:9px; margin:16px 2px 8px; cursor:pointer;
+}
+.group-head .g-avatar{
+  width:30px; height:30px; border-radius:9px; flex-shrink:0; overflow:hidden;
+  background:var(--accent-soft); color:var(--accent);
+  display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:600;
+}
+.group-head .g-avatar img{width:100%; height:100%; object-fit:cover;}
+.group-head .g-name{font-size:13.5px; font-weight:600; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.group-head .g-count{font-size:11px; color:var(--ink-faint); flex-shrink:0;}
+.group-head.unassigned .g-avatar{background:var(--surface-2); color:var(--ink-faint);}
+.story-row{
+  display:flex; align-items:center; gap:10px; padding:10px 12px; margin-bottom:7px;
+  background:var(--surface); border:1px solid var(--border); border-radius:11px; cursor:pointer;
+}
+.story-row .s-cover{
+  width:34px; height:44px; border-radius:6px; flex-shrink:0; overflow:hidden;
+  background:var(--surface-2); color:var(--ink-faint);
+  display:flex; align-items:center; justify-content:center;
+}
+.story-row .s-cover img{width:100%; height:100%; object-fit:cover;}
+.story-row .s-body{flex:1; min-width:0;}
+.story-row .s-title{font-size:13.5px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.story-row .s-meta{font-size:11px; color:var(--ink-faint); margin-top:3px; display:flex; flex-wrap:wrap; gap:5px; align-items:center;}
+.crumb{
+  display:flex; align-items:center; gap:6px; font-size:12px; color:var(--ink-faint);
+  margin:2px 2px 6px; flex-wrap:wrap;
+}
+.crumb b{color:var(--ink); font-weight:600;}
+
 /* switch row + CSS cheatsheet */
 .switch-row{
   display:flex; align-items:center; justify-content:space-between; gap:12px;
@@ -351,11 +392,16 @@ textarea{resize:vertical; min-height:80px; line-height:1.55;}
 
   <main>
     <section id="tab-shelf" class="tab-panel active">
-      <div class="section-title">我的书架</div>
-      <div id="shelfGrid" class="book-grid"></div>
+      <div class="view-switch" id="shelfViewSwitch">
+        <button data-view="character">按角色</button>
+        <button data-view="instruction">按指令</button>
+        <button data-view="story" class="on">全部故事</button>
+        <button data-view="html">HTML夹</button>
+      </div>
+      <div id="shelfBody"></div>
       <div id="shelfEmpty" class="empty-state" style="display:none;">
         <div class="glyph">(=^･ω･^=)</div>
-        <div>还没有书,点右下角 + 建一本吧</div>
+        <div id="shelfEmptyText">还没有内容,点右下角 + 建一个吧</div>
       </div>
     </section>
 
@@ -508,22 +554,39 @@ const ICONS = {
 };
 
 /* ================= IndexedDB layer ================= */
-const DB_NAME = 'meowReaderDB', DB_VERSION = 1;
+const DB_NAME = 'meowReaderDB', DB_VERSION = 2;
 let dbInstance = null;
+/* v2 splits the old flat `books` store into the four-level model the content
+   actually has: Character (who), Instruction (the shared prompt/theme several
+   characters were run through), Story (one character's independent result) and
+   Episode (正篇 / 章节 / 番外 inside one story). `books` is deliberately kept
+   after migration as an untouched backup — never delete it. */
 function openDB(){
   return new Promise((resolve,reject)=>{
     if(dbInstance) return resolve(dbInstance);
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = (e)=>{
       const db = e.target.result;
-      if(!db.objectStoreNames.contains('characters')) db.createObjectStore('characters',{keyPath:'id'});
-      if(!db.objectStoreNames.contains('books')) db.createObjectStore('books',{keyPath:'id'});
-      if(!db.objectStoreNames.contains('materials')) db.createObjectStore('materials',{keyPath:'id'});
-      if(!db.objectStoreNames.contains('presets')) db.createObjectStore('presets',{keyPath:'id'});
+      const need = (name)=>{ if(!db.objectStoreNames.contains(name)) db.createObjectStore(name,{keyPath:'id'}); };
+      need('characters');
+      need('books');          // legacy, kept as backup
+      need('materials');
+      need('presets');
+      need('instructions');
+      need('stories');
+      need('voiceBindings');
+      need('settings');
     };
     req.onsuccess = ()=>{ dbInstance = req.result; resolve(dbInstance); };
     req.onerror = ()=> reject(req.error);
   });
+}
+async function getSetting(key, fallback){
+  const row = await dbGet('settings', key);
+  return row ? row.value : fallback;
+}
+async function setSetting(key, value){
+  await dbPut('settings', { id:key, value });
 }
 async function dbPut(store, obj){
   const db = await openDB();
@@ -562,6 +625,152 @@ async function dbDelete(store, id){
   });
 }
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
+
+/* ================= Story model =================
+   Character / Instruction / Story / Episode are joined only by id — nothing
+   holds a copy of anything else, so a story can be re-pointed at a different
+   character or instruction without touching its content, and deleting a
+   grouping never deletes the stories under it.
+
+     Instruction (共同的指令/主题/系列)
+          ├── Story ──> Character A     ← 各自独立，内容互不相干
+          ├── Story ──> Character B
+          └── Story ──> Character C
+
+   A Story owns its Episodes (正篇 / 章节 / 番外). Two stories that share an
+   Instruction share nothing else. */
+
+const EPISODE_TYPES = { chapter:'章节', extra:'番外' };
+
+function makeStory(over){
+  return Object.assign({
+    id: uid(),
+    kind: 'text',            // 'text' | 'html'
+    title: '',
+    cover: '',
+    characterId: '',         // 这个故事属于哪个角色
+    instructionId: '',       // 归在哪个指令/系列下面（可空）
+    participants: [],        // 故事里出现的其他角色
+    tags: [],
+    category: '',
+    background: '',
+    episodes: [],
+    summary: null,
+    progress: null,          // { episodeId, ratio, page }
+    readerSettings: makeReaderSettings(),
+    createdAt: Date.now(),
+    updatedAt: Date.now()
+  }, over || {});
+}
+function makeReaderSettings(over){
+  return Object.assign({
+    background:'', pageEffect:'scroll', showPageNav:true,
+    customCss:'', fontUrl:'',
+    voicePresetId:'', summaryPresetId:'',
+    textOffsetX:0, textOffsetY:0, fontScale:100,
+    ruleStyle:'none', ruleGap:34, ruleOffset:0
+  }, over || {});
+}
+function makeEpisode(over){
+  return Object.assign({
+    id: uid(), title:'', type:'chapter', prompt:'', content:'', order:0, createdAt: Date.now()
+  }, over || {});
+}
+function sortedEpisodes(story){
+  return (story.episodes||[]).slice().sort((a,b)=>(a.order||0)-(b.order||0));
+}
+function nextEpisodeOrder(story){
+  return (story.episodes||[]).reduce((m,e)=>Math.max(m,(e.order||0)+1), 0);
+}
+function storyKindLabel(story){
+  if(story.kind === 'html') return 'HTML';
+  const eps = story.episodes||[];
+  const extras = eps.filter(e=>e.type==='extra').length;
+  if(extras && extras === eps.length) return '番外集';
+  return '故事';
+}
+
+/* ---------- one-time migration from the v1 `books` store ---------- */
+async function migrateBooksToStories(){
+  if(await getSetting('migratedToV2', false)) return { migrated:0, skipped:true };
+  const [books, stories] = await Promise.all([dbGetAll('books'), dbGetAll('stories')]);
+  const already = new Set(stories.map(st=>st.legacyBookId).filter(Boolean));
+  let migrated = 0;
+  for(const b of books){
+    if(already.has(b.id)) continue;
+    const rawList = b.type === 'extra' ? (b.episodes||[]) : (b.chapters||[]);
+    const episodes = rawList.slice()
+      .sort((x,y)=>(x.order||0)-(y.order||0))
+      .map((e,i)=> makeEpisode({
+        id: e.id || uid(),
+        title: e.title || ('第' + (i+1) + '节'),
+        type: b.type === 'extra' ? 'extra' : 'chapter',
+        prompt: e.prompt || '',
+        content: e.content || '',
+        order: i,
+        createdAt: e.createdAt || b.createdAt || Date.now()
+      }));
+    // The old model had no character link; the first participant marked as a
+    // char is the closest thing to "whose story this is".
+    const owner = (b.participants||[]).find(p=>p.role === 'char') || (b.participants||[])[0];
+    await dbPut('stories', makeStory({
+      id: uid(),
+      legacyBookId: b.id,
+      kind: 'text',
+      title: b.title || '未命名',
+      cover: b.cover || '',
+      characterId: (owner && owner.characterId) || '',
+      instructionId: '',
+      participants: b.participants || [],
+      tags: b.tags || [],
+      category: b.category || '',
+      background: b.background || '',
+      episodes,
+      summary: b.summary || null,
+      readerSettings: makeReaderSettings(b.readerSettings),
+      createdAt: b.createdAt || Date.now(),
+      updatedAt: b.updatedAt || Date.now()
+    }));
+    migrated++;
+  }
+  await setSetting('migratedToV2', true);
+  return { migrated, skipped:false };
+}
+
+/* ---------- queries ---------- */
+async function getStories(kind){
+  const all = await dbGetAll('stories');
+  const list = kind ? all.filter(st=>(st.kind||'text') === kind) : all;
+  return list.sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0));
+}
+async function getInstructions(){
+  const all = await dbGetAll('instructions');
+  return all.sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0));
+}
+/* Group stories under one instruction by character — the "按指令查看" mode.
+   Stories with no character still show up, under a placeholder bucket. */
+function groupStoriesByCharacter(stories, characters){
+  const byId = new Map(characters.map(c=>[c.id, c]));
+  const buckets = new Map();
+  stories.forEach(st=>{
+    const key = st.characterId || '';
+    if(!buckets.has(key)) buckets.set(key, { character: byId.get(key) || null, stories: [] });
+    buckets.get(key).stories.push(st);
+  });
+  return [...buckets.values()];
+}
+/* Group one character's stories by instruction — the "按角色查看" mode. */
+function groupStoriesByInstruction(stories, instructions){
+  const byId = new Map(instructions.map(i=>[i.id, i]));
+  const buckets = new Map();
+  stories.forEach(st=>{
+    const key = st.instructionId || '';
+    if(!buckets.has(key)) buckets.set(key, { instruction: byId.get(key) || null, stories: [] });
+    buckets.get(key).stories.push(st);
+  });
+  // 未归类 always last so the named series read first.
+  return [...buckets.values()].sort((a,b)=>(a.instruction?0:1)-(b.instruction?0:1));
+}
 
 /* ================= Toast ================= */
 let toastTimer=null;
@@ -687,17 +896,32 @@ function initFab(){
       <div class="modal-body">
         <div class="action-sheet-item" id="actNewBook">
           <div class="glyph">${ICONS.book}</div>
-          <div class="txt"><div class="t1">新建书籍</div><div class="t2">创建番外集或长篇,配置角色</div></div>
+          <div class="txt"><div class="t1">新建故事</div><div class="t2">选角色和指令,创建一个独立故事</div></div>
+        </div>
+        <div class="action-sheet-item" id="actNewInstruction">
+          <div class="glyph">${ICONS.sparkle}</div>
+          <div class="txt"><div class="t1">新建指令 / 系列</div><div class="t2">多个角色共用的生成指令或主题</div></div>
+        </div>
+        <div class="action-sheet-item" id="actNewCharacter">
+          <div class="glyph">${ICONS.paw}</div>
+          <div class="txt"><div class="t1">新建角色</div><div class="t2">角色独立于故事,可跨故事复用</div></div>
         </div>
         <div class="action-sheet-item" id="actImportChapter">
           <div class="glyph">${ICONS.download}</div>
-          <div class="txt"><div class="t1">导入章节 / 番外</div><div class="t2">添加到已有的书里</div></div>
+          <div class="txt"><div class="t1">导入章节 / 番外</div><div class="t2">添加到已有的故事里</div></div>
+        </div>
+        <div class="action-sheet-item" id="actNewHtml">
+          <div class="glyph">${ICONS.code}</div>
+          <div class="txt"><div class="t1">新建 HTML 作品</div><div class="t2">每个页面在独立 iframe 里运行</div></div>
         </div>
       </div>
     `);
     overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
-    overlay.querySelector('#actNewBook').addEventListener('click', ()=>{ closeModal(overlay); openNewBookWizard(); });
+    overlay.querySelector('#actNewBook').addEventListener('click', ()=>{ closeModal(overlay); openStoryWizard(); });
+    overlay.querySelector('#actNewInstruction').addEventListener('click', ()=>{ closeModal(overlay); openInstructionEditor(null); });
+    overlay.querySelector('#actNewCharacter').addEventListener('click', ()=>{ closeModal(overlay); openCharacterEditor(null); });
     overlay.querySelector('#actImportChapter').addEventListener('click', ()=>{ closeModal(overlay); openImportChapterFlow(); });
+    overlay.querySelector('#actNewHtml').addEventListener('click', ()=>{ closeModal(overlay); openStoryWizard({ kind:'html' }); });
   });
 }
 
@@ -713,167 +937,160 @@ function avatarOrInitial(p){
   return (p.name||'?').slice(0,1);
 }
 
-/* ================= New Book Wizard ================= */
+/* ================= New Story Wizard =================
+   A story is created against a character (whose story this is) and optionally
+   an instruction (which shared prompt produced it). Both are plain id links,
+   so either can be left blank now and set later. */
 let wizardState = null;
-function openNewBookWizard(){
-  wizardState = { type:null, participants: [], cover:'', title:'', tags:[], category:'', background:'' };
-  renderWizardStep(1);
-}
-function renderWizardStep(step){
+let wizardOverlay = null;
+function openStoryWizard(seed){
+  wizardState = Object.assign({
+    kind:'text', characterId:'', instructionId:'',
+    participants: [], cover:'', title:'', tags:[], category:'', background:''
+  }, seed || {});
   const overlay = openModal(`<div id="wizardMount"></div>`, {noBackdropClose:true});
   wizardOverlay = overlay;
-  paintWizard(step);
+  paintWizard(1);
 }
-let wizardOverlay = null;
-function paintWizard(step){
+async function paintWizard(step){
   const mount = wizardOverlay.querySelector('#wizardMount');
-  const totalSteps = wizardState.type === 'novel' ? 4 : 3;
+  const totalSteps = 3;
   let dots = '';
   for(let i=1;i<=totalSteps;i++) dots += `<span class="${i<=step?'on':''}"></span>`;
 
-  if(step===1){
+  if(step === 1){
+    const [characters, instructions] = await Promise.all([getAllCharacters(), getInstructions()]);
     mount.innerHTML = `
-      <div class="modal-header"><h2>新建书籍</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+      <div class="modal-header"><h2>新建故事</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
       <div class="modal-body">
         <div class="step-dots">${dots}</div>
-        <label class="field-label">这本书是?</label>
-        <div class="type-pick">
-          <div class="type-card ${wizardState.type==='extra'?'selected':''}" data-type="extra">
-            <div class="glyph">${ICONS.note}</div><div class="name">番外页</div>
-            <div class="desc">多条独立小剧情,各自成篇</div>
-          </div>
-          <div class="type-card ${wizardState.type==='novel'?'selected':''}" data-type="novel">
-            <div class="glyph">${ICONS.bookStack}</div><div class="name">长篇</div>
-            <div class="desc">一份背景 + 多个连续章节</div>
-          </div>
-        </div>
-        <div class="btn-row">
-          <button class="btn primary block" id="toStep2" ${wizardState.type?'':'disabled'}>下一步</button>
-        </div>
+
+        <label class="field-label">这是谁的故事?</label>
+        <select id="wzCharacter">
+          <option value="">暂不指定</option>
+          ${characters.map(c=>`<option value="${c.id}" ${wizardState.characterId===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
+        </select>
+        <div class="btn-row"><button class="btn sm" id="wzNewChar">+ 新建角色</button></div>
+
+        <label class="field-label">用的是哪个指令 / 系列?(可选)</label>
+        <select id="wzInstruction">
+          <option value="">不归入任何指令</option>
+          ${instructions.map(i=>`<option value="${i.id}" ${wizardState.instructionId===i.id?'selected':''}>${escapeHtml(i.title)}</option>`).join('')}
+        </select>
+        <div class="btn-row"><button class="btn sm" id="wzNewIns">+ 新建指令</button></div>
+        <div class="hint-text">同一个指令可以被很多角色用,每个角色的故事各自独立。这里只是归类,不会让内容互相混在一起。</div>
+
+        <div class="btn-row"><button class="btn primary block" id="toStep2">下一步</button></div>
       </div>`;
-    mount.querySelectorAll('.type-card').forEach(c=>{
-      c.addEventListener('click', ()=>{ wizardState.type = c.dataset.type; paintWizard(1); });
+    mount.querySelector('#wzNewChar').addEventListener('click', ()=>{
+      openCharacterEditor(null, async ()=>{ await paintWizard(1); });
     });
-    const nextBtn = mount.querySelector('#toStep2');
-    if(nextBtn) nextBtn.addEventListener('click', ()=>paintWizard(2));
+    mount.querySelector('#wzNewIns').addEventListener('click', ()=>{
+      openInstructionEditor(null, async ()=>{ await paintWizard(1); });
+    });
+    mount.querySelector('#toStep2').addEventListener('click', ()=>{
+      wizardState.characterId = mount.querySelector('#wzCharacter').value;
+      wizardState.instructionId = mount.querySelector('#wzInstruction').value;
+      paintWizard(2);
+    });
   }
 
-  if(step===2){
+  if(step === 2){
     mount.innerHTML = `
-      <div class="modal-header"><button class="modal-close" data-back>${ICONS.back}</button><h2>参与角色</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+      <div class="modal-header"><h2>新建故事</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
       <div class="modal-body">
         <div class="step-dots">${dots}</div>
-        <div class="hint-text" style="margin-bottom:10px;">可以添加多个 char 和多个 user,选已有角色库,也可以直接新建。</div>
-        <div class="participant-list" id="pList"></div>
-        <button class="add-participant-btn" id="addParticipantBtn" style="margin-top:10px;">+ 添加角色</button>
+        <label class="field-label">故事里还有哪些角色?(可选)</label>
+        <div class="participant-list" id="participantList"></div>
+        <button class="add-participant-btn" id="addParticipantBtn">+ 添加角色</button>
+        <div class="hint-text">可以放多个 char 和多个 user,不限于一对一。</div>
         <div class="btn-row">
-          <button class="btn primary block" id="toStep3" ${wizardState.participants.length? '':'disabled'}>下一步</button>
+          <button class="btn" id="backTo1">上一步</button>
+          <button class="btn primary block" id="toStep3">下一步</button>
         </div>
       </div>`;
     renderParticipantList(mount);
-    mount.querySelector('[data-back]').addEventListener('click', ()=>paintWizard(1));
     mount.querySelector('#addParticipantBtn').addEventListener('click', ()=>{
-      openAddParticipantSheet((p)=>{
-        wizardState.participants.push(p);
-        renderParticipantList(mount);
-        const nb = mount.querySelector('#toStep3');
-        if(nb) nb.disabled = false;
-      });
+      openAddParticipantSheet((p)=>{ wizardState.participants.push(p); renderParticipantList(mount); });
     });
-    const nb = mount.querySelector('#toStep3');
-    if(nb) nb.addEventListener('click', ()=>paintWizard(3));
+    mount.querySelector('#backTo1').addEventListener('click', ()=>paintWizard(1));
+    mount.querySelector('#toStep3').addEventListener('click', ()=>paintWizard(3));
   }
 
-  if(step===3){
+  if(step === 3){
     mount.innerHTML = `
-      <div class="modal-header"><button class="modal-close" data-back>${ICONS.back}</button><h2>基本信息</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+      <div class="modal-header"><h2>新建故事</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
       <div class="modal-body">
         <div class="step-dots">${dots}</div>
         <label class="field-label">封面(可选)</label>
-        <label class="cover-upload" id="coverUploadBox">
+        <label class="cover-upload" id="coverUpload">
           ${wizardState.cover ? `<img src="${wizardState.cover}">` : '点击上传'}
           <input type="file" accept="image/*" id="coverInput" style="display:none;">
         </label>
-        <label class="field-label">书名</label>
-        <input type="text" id="titleInput" placeholder="给这本书起个名字" value="${escapeAttr(wizardState.title)}">
-        <label class="field-label">标签(逗号分隔)</label>
+        <label class="field-label">故事名</label>
+        <input type="text" id="titleInput" placeholder="给这个故事起个名字" value="${escapeAttr(wizardState.title)}">
+        <label class="field-label">标签(逗号分隔,可选)</label>
         <input type="text" id="tagsInput" placeholder="例如: 甜文, 现代AU, 短篇" value="${escapeAttr(wizardState.tags.join(', '))}">
-        <label class="field-label">自定义分类</label>
-        <input type="text" id="categoryInput" list="categoryList" placeholder="例如: 某角色的番外合集" value="${escapeAttr(wizardState.category)}">
+        <label class="field-label">分类(可选)</label>
+        <input type="text" id="categoryInput" list="categoryList" placeholder="自定义分类" value="${escapeAttr(wizardState.category)}">
         <datalist id="categoryList"></datalist>
+        <label class="field-label">背景设定(可选)</label>
+        <textarea id="bgInput" placeholder="世界观、人物关系、开篇设定等..." style="min-height:110px;">${escapeHtml(wizardState.background)}</textarea>
         <div class="btn-row">
-          <button class="btn primary block" id="toNext" ${wizardState.type==='novel'?'':''}>${wizardState.type==='novel'?'下一步':'创建'}</button>
-        </div>
-      </div>`;
-    mount.querySelector('[data-back]').addEventListener('click', ()=>paintWizard(2));
-    mount.querySelector('#coverUploadBox').addEventListener('click', (e)=>{
-      if(e.target.id==='coverInput') return;
-    });
-    mount.querySelector('#coverInput').addEventListener('change', (e)=>handleCoverUpload(e, mount));
-    populateCategoryList(mount);
-    const nextBtn = mount.querySelector('#toNext');
-    nextBtn.addEventListener('click', ()=>{
-      wizardState.title = mount.querySelector('#titleInput').value.trim() || '未命名书籍';
-      wizardState.tags = mount.querySelector('#tagsInput').value.split(',').map(s=>s.trim()).filter(Boolean);
-      wizardState.category = mount.querySelector('#categoryInput').value.trim();
-      if(wizardState.type === 'novel') paintWizard(4);
-      else finishWizard();
-    });
-  }
-
-  if(step===4){
-    mount.innerHTML = `
-      <div class="modal-header"><button class="modal-close" data-back>${ICONS.back}</button><h2>长篇背景</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
-      <div class="modal-body">
-        <div class="step-dots">${dots}</div>
-        <label class="field-label">故事背景 / 设定</label>
-        <textarea id="bgInput" placeholder="世界观、人物关系、开篇设定等..." style="min-height:140px;">${escapeHtml(wizardState.background)}</textarea>
-        <div class="hint-text">章节可以在创建后于书籍详情页里继续添加。</div>
-        <div class="btn-row">
+          <button class="btn" id="backTo2">上一步</button>
           <button class="btn primary block" id="finishBtn">创建</button>
         </div>
       </div>`;
-    mount.querySelector('[data-back]').addEventListener('click', ()=>paintWizard(3));
+    populateCategoryList(mount);
+    mount.querySelector('#coverUpload').addEventListener('click', ()=> mount.querySelector('#coverInput').click());
+    mount.querySelector('#coverInput').addEventListener('change', (e)=> handleCoverUpload(e, mount));
+    mount.querySelector('#backTo2').addEventListener('click', ()=>paintWizard(2));
     mount.querySelector('#finishBtn').addEventListener('click', ()=>{
+      wizardState.title = mount.querySelector('#titleInput').value.trim() || '未命名故事';
+      wizardState.tags = mount.querySelector('#tagsInput').value.split(',').map(x=>x.trim()).filter(Boolean);
+      wizardState.category = mount.querySelector('#categoryInput').value.trim();
       wizardState.background = mount.querySelector('#bgInput').value;
       finishWizard();
     });
   }
 
-  mount.querySelectorAll('[data-close]').forEach(b=>b.addEventListener('click', ()=>closeModal(wizardOverlay)));
+  mount.querySelector('[data-close]').addEventListener('click', ()=>closeModal(wizardOverlay));
 }
 function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function escapeAttr(s){ return escapeHtml(s); }
 
 async function populateCategoryList(mount){
-  const books = await dbGetAll('books');
-  const cats = [...new Set(books.map(b=>b.category).filter(Boolean))];
+  const stories = await getStories();
+  const cats = [...new Set(stories.map(st=>st.category).filter(Boolean))];
   const dl = mount.querySelector('#categoryList');
   if(dl) dl.innerHTML = cats.map(c=>`<option value="${escapeAttr(c)}">`).join('');
 }
 function handleCoverUpload(e, mount){
-  const f = e.target.files[0];
-  if(!f) return;
+  const file = e.target.files[0];
+  if(!file) return;
   const reader = new FileReader();
   reader.onload = ()=>{
     const img = new Image();
     img.onload = ()=>{
       const canvas = document.createElement('canvas');
-      const maxW = 480;
-      const scale = Math.min(1, maxW/img.width);
-      canvas.width = img.width*scale; canvas.height = img.height*scale;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(img,0,0,canvas.width,canvas.height);
+      const maxW = 400;
+      const scale = Math.min(1, maxW / img.width);
+      canvas.width = img.width * scale;
+      canvas.height = img.height * scale;
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
       wizardState.cover = canvas.toDataURL('image/jpeg', 0.85);
-      paintWizard(3);
+      const holder = mount.querySelector('#coverUpload');
+      if(holder) holder.innerHTML = `<img src="${wizardState.cover}"><input type="file" accept="image/*" id="coverInput" style="display:none;">`;
+      const input = mount.querySelector('#coverInput');
+      if(input) input.addEventListener('change', (ev)=>handleCoverUpload(ev, mount));
     };
     img.src = reader.result;
   };
-  reader.readAsDataURL(f);
+  reader.readAsDataURL(file);
 }
-
 function renderParticipantList(mount){
-  const list = mount.querySelector('#pList');
+  const list = mount.querySelector('#participantList');
+  if(!list) return;
   if(!wizardState.participants.length){
     list.innerHTML = `<div class="hint-text">还没有添加角色</div>`;
     return;
@@ -883,191 +1100,156 @@ function renderParticipantList(mount){
       <div class="p-avatar">${avatarOrInitial(p)}</div>
       <div class="p-info">
         <div class="p-name">${escapeHtml(p.name)}</div>
+        <div class="p-role">${p.role === 'char' ? 'char(角色)' : 'user(我)'}</div>
       </div>
-      <span class="p-role-tag ${p.role}">${p.role==='char'?'角色 char':'用户 user'}</span>
       <button class="icon-btn" data-remove="${idx}">${ICONS.close}</button>
-    </div>
-  `).join('');
+    </div>`).join('');
   list.querySelectorAll('[data-remove]').forEach(b=>{
     b.addEventListener('click', ()=>{
-      wizardState.participants.splice(parseInt(b.dataset.remove),1);
+      wizardState.participants.splice(parseInt(b.dataset.remove,10),1);
       renderParticipantList(mount);
-      const nb = mount.querySelector('#toStep3');
-      if(nb) nb.disabled = wizardState.participants.length===0;
     });
   });
 }
-
 async function openAddParticipantSheet(onAdd){
-  const existing = await getAllCharacters();
+  const chars = await getAllCharacters();
   const overlay = openModal(`
     <div class="modal-header"><h2>添加角色</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
     <div class="modal-body">
-      <div class="chip-row" style="margin-bottom:12px;">
-        <button class="choice-chip selected" data-mode="existing">已有角色</button>
+      <div class="chip-row" style="margin-bottom:10px;">
+        <button class="choice-chip selected" data-mode="existing">从角色库选</button>
         <button class="choice-chip" data-mode="new">新建角色</button>
       </div>
-      <div id="apMount"></div>
-    </div>
-  `);
-  overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
-  const apMount = overlay.querySelector('#apMount');
-
+      <div id="apBody"></div>
+    </div>`);
+  const body = overlay.querySelector('#apBody');
+  let mode = 'existing';
+  function paintMode(){
+    overlay.querySelectorAll('[data-mode]').forEach(b=>b.classList.toggle('selected', b.dataset.mode===mode));
+    mode === 'existing' ? paintExisting() : paintNew();
+  }
   function paintExisting(){
-    if(!existing.length){
-      apMount.innerHTML = `<div class="hint-text">角色库还是空的,先切到"新建角色"吧。</div>`;
-      return;
-    }
-    apMount.innerHTML = `
-      <select id="existingSelect">
-        ${existing.map(c=>`<option value="${c.id}">${escapeHtml(c.name)} (${c.roleDefault==='char'?'char':'user'})</option>`).join('')}
-      </select>
-      <label class="field-label">作为</label>
-      <div class="chip-row"><button class="choice-chip selected" data-role="char">char</button><button class="choice-chip" data-role="user">user</button></div>
-      <div class="btn-row"><button class="btn primary block" id="confirmExisting">添加</button></div>
-    `;
-    let role = 'char';
-    apMount.querySelectorAll('[data-role]').forEach(b=>b.addEventListener('click', ()=>{
-      apMount.querySelectorAll('[data-role]').forEach(x=>x.classList.remove('selected'));
-      b.classList.add('selected'); role = b.dataset.role;
-    }));
-    apMount.querySelector('#confirmExisting').addEventListener('click', ()=>{
-      const id = apMount.querySelector('#existingSelect').value;
-      const ch = existing.find(c=>c.id===id);
-      onAdd({ characterId: ch.id, name: ch.name, avatar: ch.avatar, role });
-      closeModal(overlay);
+    if(!chars.length){ body.innerHTML = `<div class="hint-text">角色库还是空的,先新建一个吧</div>`; return; }
+    body.innerHTML = chars.map(c=>`
+      <div class="entry-item" data-char="${c.id}">
+        <div class="t">${escapeHtml(c.name)}</div>
+        <div class="m">默认 ${c.roleDefault === 'char' ? 'char' : 'user'}</div>
+      </div>`).join('');
+    body.querySelectorAll('[data-char]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        const c = chars.find(x=>x.id === el.dataset.char);
+        onAdd({ characterId: c.id, name: c.name, avatar: c.avatar || '', role: c.roleDefault || 'char' });
+        closeModal(overlay);
+      });
     });
   }
   function paintNew(){
-    apMount.innerHTML = `
-      <label class="field-label">名字</label>
-      <input type="text" id="newName" placeholder="角色 / 用户名">
-      <label class="field-label">作为</label>
-      <div class="chip-row"><button class="choice-chip selected" data-role="char">char</button><button class="choice-chip" data-role="user">user</button></div>
-      <label class="field-label">头像(可选)</label>
-      <label class="cover-upload" style="width:72px; height:72px; border-radius:50%;" id="newAvatarBox">
-        选择图片
-        <input type="file" accept="image/*" id="newAvatarInput" style="display:none;">
-      </label>
-      <div class="btn-row"><button class="btn primary block" id="confirmNew">创建并添加</button></div>
-    `;
-    let role='char', avatarData='';
-    apMount.querySelectorAll('[data-role]').forEach(b=>b.addEventListener('click', ()=>{
-      apMount.querySelectorAll('[data-role]').forEach(x=>x.classList.remove('selected'));
-      b.classList.add('selected'); role = b.dataset.role;
-    }));
-    apMount.querySelector('#newAvatarInput').addEventListener('change', (e)=>{
-      const f = e.target.files[0]; if(!f) return;
-      const reader = new FileReader();
-      reader.onload = ()=>{
-        avatarData = reader.result;
-        apMount.querySelector('#newAvatarBox').innerHTML = `<img src="${avatarData}" style="width:100%;height:100%;object-fit:cover;">`;
-      };
-      reader.readAsDataURL(f);
+    body.innerHTML = `
+      <label class="field-label">角色名</label>
+      <input type="text" id="apName" placeholder="角色的名字">
+      <label class="field-label">身份</label>
+      <div class="chip-row">
+        <button class="choice-chip selected" data-newrole="char">char(角色)</button>
+        <button class="choice-chip" data-newrole="user">user(我)</button>
+      </div>
+      <div class="btn-row"><button class="btn primary block" id="apCreate">创建并添加</button></div>`;
+    let role = 'char';
+    body.querySelectorAll('[data-newrole]').forEach(b=>{
+      b.addEventListener('click', ()=>{
+        role = b.dataset.newrole;
+        body.querySelectorAll('[data-newrole]').forEach(x=>x.classList.toggle('selected', x===b));
+      });
     });
-    apMount.querySelector('#confirmNew').addEventListener('click', async ()=>{
-      const name = apMount.querySelector('#newName').value.trim();
-      if(!name){ showToast('请输入名字'); return; }
-      const ch = await createCharacter(name, role, avatarData);
-      onAdd({ characterId: ch.id, name: ch.name, avatar: ch.avatar, role });
+    body.querySelector('#apCreate').addEventListener('click', async ()=>{
+      const name = body.querySelector('#apName').value.trim();
+      if(!name){ showToast('请填写角色名'); return; }
+      const c = await createCharacter(name, role, '');
+      onAdd({ characterId: c.id, name: c.name, avatar:'', role });
       closeModal(overlay);
     });
   }
   overlay.querySelectorAll('[data-mode]').forEach(b=>{
-    b.addEventListener('click', ()=>{
-      overlay.querySelectorAll('[data-mode]').forEach(x=>x.classList.remove('selected'));
-      b.classList.add('selected');
-      b.dataset.mode==='existing' ? paintExisting() : paintNew();
-    });
+    b.addEventListener('click', ()=>{ mode = b.dataset.mode; paintMode(); });
   });
-  paintExisting();
+  overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
+  paintMode();
 }
 
 async function finishWizard(){
-  const book = {
-    id: uid(),
+  const story = makeStory({
+    kind: wizardState.kind,
     title: wizardState.title,
     cover: wizardState.cover,
-    type: wizardState.type,
+    characterId: wizardState.characterId,
+    instructionId: wizardState.instructionId,
     tags: wizardState.tags,
     category: wizardState.category,
     participants: wizardState.participants,
-    createdAt: Date.now(), updatedAt: Date.now(),
-    episodes: wizardState.type==='extra' ? [] : undefined,
-    background: wizardState.type==='novel' ? wizardState.background : undefined,
-    chapters: wizardState.type==='novel' ? [] : undefined,
-    readerSettings: { background:'', pageEffect:'scroll', customCss:'', fontUrl:'', voicePresetId:'', summaryPresetId:'' }
-  };
-  await dbPut('books', book);
+    background: wizardState.background
+  });
+  await dbPut('stories', story);
   closeModal(wizardOverlay);
-  showToast('书籍创建成功 owo');
+  showToast('故事创建成功 owo');
   await refreshShelf();
 }
 
 /* ================= Import Chapter Flow ================= */
 async function openImportChapterFlow(){
-  const books = await dbGetAll('books');
-  if(!books.length){ showToast('还没有书籍,先新建一本吧'); return; }
+  const stories = await getStories('text');
+  if(!stories.length){ showToast('还没有故事,先新建一个吧'); return; }
+  const characters = await getAllCharacters();
   const overlay = openModal(`
-    <div class="modal-header"><h2>导入到已有书籍</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+    <div class="modal-header"><h2>导入到已有故事</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
     <div class="modal-body">
-      <label class="field-label">选择书籍</label>
+      <label class="field-label">选择故事</label>
       <select id="pickBook">
-        ${books.map(b=>`<option value="${b.id}">${escapeHtml(b.title)} (${b.type==='extra'?'番外页':'长篇'})</option>`).join('')}
+        ${stories.map(st=>{
+          const ch = characters.find(c=>c.id===st.characterId);
+          return `<option value="${st.id}">${escapeHtml(st.title)}${ch?(' · '+escapeHtml(ch.name)):''}</option>`;
+        }).join('')}
       </select>
-      <div id="importMount"></div>
-    </div>
-  `);
+      <label class="field-label">这条是?</label>
+      <div class="chip-row">
+        <button class="choice-chip selected" data-imptype="chapter">正篇 / 章节</button>
+        <button class="choice-chip" data-imptype="extra">番外</button>
+      </div>
+      <label class="field-label" id="impPromptLabel" style="display:none;">番外要求(别人给出的生成指令 / 主题)</label>
+      <textarea id="epPrompt" style="min-height:70px; display:none;" placeholder="例如: 生成一段雨天便利店偶遇的番外..."></textarea>
+      <label class="field-label">标题</label>
+      <input type="text" id="epTitle" placeholder="给这段内容起个名字">
+      <label class="field-label">正文(AI回复的内容,支持粘贴 HTML/CSS)</label>
+      <textarea id="epContent" style="min-height:160px;" placeholder="正文内容..."></textarea>
+      <div class="btn-row"><button class="btn primary block" id="doImport">添加</button></div>
+    </div>`);
   overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
-  const importMount = overlay.querySelector('#importMount');
-  function paintForBook(book){
-    if(book.type==='extra'){
-      importMount.innerHTML = `
-        <label class="field-label">番外要求(剧情主题/设定要求,例如别人给出的生成指令)</label>
-        <textarea id="epPrompt" style="min-height:70px;" placeholder="例如: 生成一段雨天便利店偶遇的番外..."></textarea>
-        <label class="field-label">番外剧情标题</label>
-        <input type="text" id="epTitle" placeholder="给这段番外起个名字">
-        <label class="field-label">正文(AI回复的内容,支持粘贴 HTML/CSS)</label>
-        <textarea id="epContent" style="min-height:160px;" placeholder="正文内容..."></textarea>
-        <div class="btn-row"><button class="btn primary block" id="doImport">添加番外</button></div>
-      `;
-      importMount.querySelector('#doImport').addEventListener('click', async ()=>{
-        const title = importMount.querySelector('#epTitle').value.trim() || '未命名番外';
-        const prompt = importMount.querySelector('#epPrompt').value;
-        const content = importMount.querySelector('#epContent').value;
-        book.episodes = book.episodes || [];
-        book.episodes.push({ id: uid(), title, prompt, content, createdAt: Date.now() });
-        book.updatedAt = Date.now();
-        await dbPut('books', book);
-        closeModal(overlay);
-        showToast('已添加番外剧情');
-        await refreshShelf();
-      });
-    } else {
-      const nextOrder = (book.chapters||[]).length + 1;
-      importMount.innerHTML = `
-        <label class="field-label">章节标题</label>
-        <input type="text" id="chTitle" placeholder="第 ${nextOrder} 章 ...">
-        <label class="field-label">内容(支持粘贴 HTML/CSS)</label>
-        <textarea id="chContent" style="min-height:160px;" placeholder="正文内容..."></textarea>
-        <div class="btn-row"><button class="btn primary block" id="doImport">添加章节</button></div>
-      `;
-      importMount.querySelector('#doImport').addEventListener('click', async ()=>{
-        const title = importMount.querySelector('#chTitle').value.trim() || ('第 '+nextOrder+' 章');
-        const content = importMount.querySelector('#chContent').value;
-        book.chapters = book.chapters || [];
-        book.chapters.push({ id: uid(), title, content, order: nextOrder, createdAt: Date.now() });
-        book.updatedAt = Date.now();
-        await dbPut('books', book);
-        closeModal(overlay);
-        showToast('已添加章节');
-        await refreshShelf();
-      });
-    }
-  }
-  paintForBook(books.find(b=>b.id===overlay.querySelector('#pickBook').value));
-  overlay.querySelector('#pickBook').addEventListener('change', (e)=>{
-    paintForBook(books.find(b=>b.id===e.target.value));
+  let impType = 'chapter';
+  const promptLabel = overlay.querySelector('#impPromptLabel');
+  const promptBox = overlay.querySelector('#epPrompt');
+  overlay.querySelectorAll('[data-imptype]').forEach(b=>{
+    b.addEventListener('click', ()=>{
+      impType = b.dataset.imptype;
+      overlay.querySelectorAll('[data-imptype]').forEach(x=>x.classList.toggle('selected', x===b));
+      const showPrompt = impType === 'extra';
+      promptLabel.style.display = showPrompt ? '' : 'none';
+      promptBox.style.display = showPrompt ? '' : 'none';
+    });
+  });
+  overlay.querySelector('#doImport').addEventListener('click', async ()=>{
+    const story = await dbGet('stories', overlay.querySelector('#pickBook').value);
+    if(!story){ showToast('故事不见了'); return; }
+    story.episodes = story.episodes || [];
+    story.episodes.push(makeEpisode({
+      title: overlay.querySelector('#epTitle').value.trim() || (impType === 'extra' ? '未命名番外' : '未命名章节'),
+      type: impType,
+      prompt: promptBox.value,
+      content: overlay.querySelector('#epContent').value,
+      order: nextEpisodeOrder(story)
+    }));
+    story.updatedAt = Date.now();
+    await dbPut('stories', story);
+    closeModal(overlay);
+    showToast(impType === 'extra' ? '已添加番外' : '已添加章节');
+    await refreshShelf();
   });
 }
 
@@ -2132,7 +2314,7 @@ async function playTtsChunk(session, i){
     showApiErrorModal('朗读失败', err);
   }
 }
-function startReadAloud(book, entry){
+function startReadAloud(story, entry){
   const audio = new Audio();
   audio.preload = 'auto';
   /* Safari only unlocks an <audio> element for later programmatic playback if
@@ -2140,7 +2322,7 @@ function startReadAloud(book, entry){
      request happens after several awaits — so prime it here, synchronously. */
   try{ const pr = audio.play(); if(pr && pr.catch) pr.catch(()=>{}); }catch(e){}
   return (async ()=>{
-    const rs = book.readerSettings || {};
+    const rs = story.readerSettings || {};
     const preset = rs.voicePresetId ? await dbGet('presets', rs.voicePresetId) : null;
     if(!preset || preset.kind !== 'voice'){ showToast('请先在阅读设置里选一个语音预设'); return; }
     if(!preset.endpoint){ showToast('这个语音预设还没有填接口地址'); return; }
@@ -2216,10 +2398,10 @@ async function callSummaryApi(preset, content){
 }
 /* Everything from the background up to and including the chapter being read —
    the same span the copy sheet uses, so the summary can stand in for it. */
-function composeSummarySource(book, entry){
+function composeSummarySource(story, entry){
   const parts = [];
-  if(book.background) parts.push('【背景设定】\n' + book.background.trim());
-  const chapters = (book.chapters||[]).slice().sort((a,b)=>a.order-b.order);
+  if(story.background) parts.push('【背景设定】\n' + story.background.trim());
+  const chapters = sortedEpisodes(story).filter(e=>e.type !== 'extra');
   const idx = chapters.findIndex(c=>c.id === entry.id);
   const upTo = idx >= 0 ? chapters.slice(0, idx+1) : chapters;
   upTo.forEach(c=> parts.push('【'+c.title+'】\n' + plainTextFromContent(c.content||'')));
@@ -2240,11 +2422,11 @@ function showApiErrorModal(title, err){
   `);
   overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
 }
-async function openSummarySheet(book, entry){
-  const rs = book.readerSettings || {};
+async function openSummarySheet(story, entry){
+  const rs = story.readerSettings || {};
   const preset = rs.summaryPresetId ? await dbGet('presets', rs.summaryPresetId) : null;
-  const existing = book.summary || null;
-  const chapters = (book.chapters||[]).slice().sort((a,b)=>a.order-b.order);
+  const existing = story.summary || null;
+  const chapters = sortedEpisodes(story);
   const forTitle = existing ? (chapters.find(c=>c.id === existing.forChapterId)||{}).title : '';
   const overlay = openModal(`
     <div class="modal-header"><h2>前文总结</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
@@ -2269,12 +2451,12 @@ async function openSummarySheet(book, entry){
 
   async function persist(text){
     if(text){
-      book.summary = { text, updatedAt: Date.now(), forChapterId: entry.id };
+      story.summary = { text, updatedAt: Date.now(), forChapterId: entry.id };
     }else{
-      delete book.summary;
+      delete story.summary;
     }
-    book.updatedAt = Date.now();
-    await dbPut('books', book);
+    story.updatedAt = Date.now();
+    await dbPut('stories', story);
   }
 
   genBtn.addEventListener('click', async ()=>{
@@ -2283,7 +2465,7 @@ async function openSummarySheet(book, entry){
     genBtn.disabled = true;
     genBtn.textContent = '生成中…';
     try{
-      const text = await callSummaryApi(preset, composeSummarySource(book, entry));
+      const text = await callSummaryApi(preset, composeSummarySource(story, entry));
       ta.value = text;
       await persist(text);
       showToast('提要已生成并保存');
@@ -2337,14 +2519,16 @@ function initDataBackup(){
   });
 }
 async function exportAllData(){
-  const [characters, books, materials, presets] = await Promise.all([
-    dbGetAll('characters'), dbGetAll('books'), dbGetAll('materials'), dbGetAll('presets')
+  const [characters, books, materials, presets, instructions, stories, voiceBindings, settings] = await Promise.all([
+    dbGetAll('characters'), dbGetAll('books'), dbGetAll('materials'), dbGetAll('presets'),
+    dbGetAll('instructions'), dbGetAll('stories'), dbGetAll('voiceBindings'), dbGetAll('settings')
   ]);
   const payload = {
     exportedAt: Date.now(),
+    schema: 2,
     theme: localStorage.getItem('mmr_theme') || 'light',
     customCss: localStorage.getItem('mmr_custom_css') || '',
-    characters, books, materials, presets
+    characters, books, materials, presets, instructions, stories, voiceBindings, settings
   };
   const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'});
   const url = URL.createObjectURL(blob);
@@ -2366,6 +2550,16 @@ async function importAllData(data){
   }
   for(const c of (data.characters||[])) await dbPut('characters', c);
   for(const b of (data.books||[])) await dbPut('books', b);
+  for(const r of (data.instructions||[])) await dbPut('instructions', r);
+  for(const r of (data.stories||[])) await dbPut('stories', r);
+  for(const r of (data.voiceBindings||[])) await dbPut('voiceBindings', r);
+  for(const r of (data.settings||[])) await dbPut('settings', r);
+  // A v1 backup carries only `books`; run the migration so it lands in the new
+  // model instead of being invisible.
+  if(!data.stories || !data.stories.length){
+    await setSetting('migratedToV2', false);
+    await migrateBooksToStories();
+  }
   for(const m of (data.materials||[])) await dbPut('materials', m);
   for(const p of (data.presets||[])) await dbPut('presets', p);
 }
@@ -2387,7 +2581,7 @@ function initSearch(){
 async function renderSearch(){
   const input = document.getElementById('searchInput');
   const q = (input.value || '').trim().toLowerCase();
-  const books = await dbGetAll('books');
+  const books = await getStories();
   const facetEl = document.getElementById('searchFacetSelected');
   const resultsEl = document.getElementById('searchResults');
 
@@ -2421,16 +2615,18 @@ async function renderSearch(){
 
   let candidates = books;
   if(searchFacet === 'category' && searchFacetValue) candidates = books.filter(b=>b.category === searchFacetValue);
-  if(searchFacet === 'character' && searchFacetValue) candidates = books.filter(b=>(b.participants||[]).some(p=>p.characterId===searchFacetValue));
+  if(searchFacet === 'character' && searchFacetValue) candidates = books.filter(b=>b.characterId===searchFacetValue || (b.participants||[]).some(p=>p.characterId===searchFacetValue));
   if(searchFacet === 'tag' && searchFacetValue) candidates = books.filter(b=>(b.tags||[]).includes(searchFacetValue));
-  if(searchFacet === 'extra') candidates = candidates.filter(b=>b.type==='extra');
+  // 番外 filtering happens per-episode below, since one story can hold both
 
   const hits = [];
   candidates.forEach(book=>{
-    const entries = book.type==='extra' ? (book.episodes||[]) : (book.chapters||[]);
+    let entries = sortedEpisodes(book);
+    if(searchFacet === 'extra') entries = entries.filter(e=>e.type === 'extra');
     let anyEntryMatch = false;
     entries.forEach(en=>{
-      const match = !q || en.title.toLowerCase().includes(q) || (en.prompt||'').toLowerCase().includes(q);
+      const match = !q || en.title.toLowerCase().includes(q) || (en.prompt||'').toLowerCase().includes(q)
+        || (en.content||'').toLowerCase().includes(q);
       if(match){ hits.push({book, entry:en}); anyEntryMatch = true; }
     });
     if(searchFacet !== 'extra' && !anyEntryMatch){
@@ -2448,7 +2644,7 @@ async function renderSearch(){
     return;
   }
   resultsEl.innerHTML = hits.map((h,i)=>{
-    const typeLabel = h.book.type==='extra' ? '番外' : '长篇';
+    const typeLabel = h.entry ? (h.entry.type === 'extra' ? '番外' : '正篇') : storyKindLabel(h.book);
     const metaBits = [typeLabel];
     if(h.entry && h.entry.prompt) metaBits.push(h.entry.prompt.slice(0,36));
     else if(!h.entry && h.book.category) metaBits.push(h.book.category);
@@ -2462,110 +2658,470 @@ async function renderSearch(){
   resultsEl.querySelectorAll('[data-hit]').forEach(el=>{
     el.addEventListener('click', ()=>{
       const h = hits[parseInt(el.dataset.hit)];
-      openBookDetail(h.book.id, h.entry ? h.entry.id : undefined);
+      openStoryDetail(h.book.id, h.entry ? h.entry.id : undefined);
     });
   });
 }
 
-/* ================= Shelf render ================= */
-async function refreshShelf(){
-  const books = await dbGetAll('books');
-  books.sort((a,b)=> (b.updatedAt||0) - (a.updatedAt||0));
-  const grid = document.getElementById('shelfGrid');
-  const empty = document.getElementById('shelfEmpty');
-  document.getElementById('bookCountLabel').textContent = books.length ? books.length + ' 本' : '';
-  if(!books.length){ grid.innerHTML=''; empty.style.display='block'; return; }
-  empty.style.display='none';
-  grid.innerHTML = books.map(b=>{
-    const count = b.type==='extra' ? (b.episodes||[]).length : (b.chapters||[]).length;
-    const countLabel = b.type==='extra' ? count+' 篇番外' : count+' 章';
-    const chipColor = b.type==='extra' ? 'var(--tag-extra)' : 'var(--tag-novel)';
-    const names = (b.participants||[]).map(p=>p.name).slice(0,3).join(' / ');
-    return `
-      <div class="book-card" data-book="${b.id}">
-        <div class="book-cover">
-          <span class="book-type-chip" style="background:${chipColor};">${b.type==='extra'?'番外':'长篇'}</span>
-          ${b.cover ? `<img src="${b.cover}">` : `<span>${ICONS.bookOpen}</span>`}
-        </div>
-        <div class="body">
-          <div class="title">${escapeHtml(b.title)}</div>
-          <div class="meta">
-            <span class="mini-tag">${countLabel}</span>
-            ${b.category?`<span class="mini-tag">${escapeHtml(b.category)}</span>`:''}
-          </div>
-          <div class="meta" style="margin-top:4px;">${escapeHtml(names)}</div>
-        </div>
-      </div>`;
-  }).join('');
-  grid.querySelectorAll('.book-card').forEach(card=>{
-    card.addEventListener('click', ()=>openBookDetail(card.dataset.book));
+/* ================= Shelf render =================
+   Three ways into the same set of stories. None of them owns the data: they
+   are just different groupings of the story list, so a story shows up wherever
+   its characterId / instructionId point, and moving it is a one-field edit. */
+let shelfView = 'story';   // 'character' | 'instruction' | 'story' | 'html'
+
+function initShelf(){
+  document.querySelectorAll('#shelfViewSwitch button').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      shelfView = btn.dataset.view;
+      document.querySelectorAll('#shelfViewSwitch button').forEach(b=>b.classList.toggle('on', b === btn));
+      refreshShelf();
+    });
   });
 }
 
-/* ================= Book Detail ================= */
-async function openBookDetail(bookId, openEntryId){
-  const book = await dbGet('books', bookId);
-  if(!book) return;
-  const overlay = openModal(`<div id="detailMount" style="max-height:100%;"></div>`);
-  overlay.querySelector('.modal-sheet').style.maxHeight = '92vh';
-  paintDetail(overlay, book);
-  if(openEntryId) openReaderPage(overlay, book, openEntryId);
+function storyRowHtml(st, extraMeta){
+  const eps = st.episodes || [];
+  const chapters = eps.filter(e=>e.type !== 'extra').length;
+  const extras = eps.filter(e=>e.type === 'extra').length;
+  const bits = [];
+  if(st.kind === 'html') bits.push(eps.length + ' 个页面');
+  else {
+    if(chapters) bits.push(chapters + ' 章');
+    if(extras) bits.push(extras + ' 篇番外');
+    if(!eps.length) bits.push('还没有内容');
+  }
+  if(st.category) bits.push(st.category);
+  return `
+    <div class="story-row" data-story="${st.id}">
+      <div class="s-cover">${st.cover?`<img src="${st.cover}">`:(st.kind==='html'?ICONS.code:ICONS.bookOpen)}</div>
+      <div class="s-body">
+        <div class="s-title">${escapeHtml(st.title||'未命名')}</div>
+        <div class="s-meta">
+          ${extraMeta ? `<span class="mini-tag">${escapeHtml(extraMeta)}</span>` : ''}
+          ${bits.map(t=>`<span>${escapeHtml(t)}</span>`).join('<span>·</span>')}
+        </div>
+      </div>
+    </div>`;
 }
-function paintDetail(overlay, book){
-  const mount = overlay.querySelector('#detailMount');
-  const entries = book.type==='extra' ? (book.episodes||[]) : (book.chapters||[]).slice().sort((a,b)=>a.order-b.order);
-  const roleList = (book.participants||[]).map(p=>`<span class="p-role-tag ${p.role}">${escapeHtml(p.name)}</span>`).join(' ');
-  mount.innerHTML = `
-    <div class="modal-header"><h2>书籍详情</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+function bindStoryRows(root){
+  root.querySelectorAll('[data-story]').forEach(row=>{
+    row.addEventListener('click', ()=> openStoryDetail(row.dataset.story));
+  });
+}
+
+async function refreshShelf(){
+  const body = document.getElementById('shelfBody');
+  const empty = document.getElementById('shelfEmpty');
+  const emptyText = document.getElementById('shelfEmptyText');
+  if(!body) return;
+
+  const wantHtml = shelfView === 'html';
+  const [stories, characters, instructions] = await Promise.all([
+    getStories(wantHtml ? 'html' : 'text'), getAllCharacters(), getInstructions()
+  ]);
+
+  const countLabel = document.getElementById('bookCountLabel');
+  if(countLabel) countLabel.textContent = stories.length ? stories.length + (wantHtml ? ' 个' : ' 个故事') : '';
+
+  const showEmpty = (text)=>{ body.innerHTML=''; emptyText.textContent = text; empty.style.display='block'; };
+  empty.style.display = 'none';
+
+  if(shelfView === 'story' || shelfView === 'html'){
+    if(!stories.length) return showEmpty(wantHtml ? 'HTML夹还是空的,点右下角 + 导入一个' : '还没有故事,点右下角 + 建一个吧');
+    body.innerHTML = stories.map(st=>{
+      const ch = characters.find(c=>c.id === st.characterId);
+      return storyRowHtml(st, ch ? ch.name : '');
+    }).join('');
+    return bindStoryRows(body);
+  }
+
+  if(shelfView === 'character'){
+    // Only characters that actually have stories, plus a bucket for orphans.
+    const buckets = groupStoriesByCharacter(stories, characters);
+    if(!buckets.length) return showEmpty('还没有故事,点右下角 + 建一个吧');
+    buckets.sort((a,b)=> (a.character?0:1)-(b.character?0:1) || b.stories.length-a.stories.length);
+    body.innerHTML = buckets.map(bk=>`
+      <div class="group-head ${bk.character?'':'unassigned'}" data-character="${bk.character?bk.character.id:''}">
+        <div class="g-avatar">${bk.character ? avatarOrInitial(bk.character) : ICONS.paw}</div>
+        <div class="g-name">${escapeHtml(bk.character ? bk.character.name : '未指定角色')}</div>
+        <div class="g-count">${bk.stories.length} 个故事 ${ICONS.chevronRight}</div>
+      </div>
+      ${bk.stories.map(st=>{
+        const ins = instructions.find(i=>i.id === st.instructionId);
+        return storyRowHtml(st, ins ? ins.title : '');
+      }).join('')}
+    `).join('');
+    body.querySelectorAll('[data-character]').forEach(h=>{
+      h.addEventListener('click', ()=> openCharacterDetail(h.dataset.character));
+    });
+    return bindStoryRows(body);
+  }
+
+  // 按指令：每个指令下面列出各个角色各自独立的故事
+  const used = new Set(stories.map(st=>st.instructionId).filter(Boolean));
+  const rows = instructions.filter(i=>true);
+  const orphan = stories.filter(st=>!st.instructionId);
+  if(!rows.length && !orphan.length) return showEmpty('还没有指令,点右下角 + 新建一个指令');
+  body.innerHTML = rows.map(ins=>{
+    const mine = stories.filter(st=>st.instructionId === ins.id);
+    return `
+      <div class="group-head" data-instruction="${ins.id}">
+        <div class="g-avatar">${ICONS.sparkle}</div>
+        <div class="g-name">${escapeHtml(ins.title)}</div>
+        <div class="g-count">${mine.length} 个角色的故事 ${ICONS.chevronRight}</div>
+      </div>
+      ${mine.length ? mine.map(st=>{
+        const ch = characters.find(c=>c.id === st.characterId);
+        return storyRowHtml(st, ch ? ch.name : '未指定角色');
+      }).join('') : `<div class="hint-text" style="margin:0 2px 8px;">这个指令下面还没有故事</div>`}
+    `;
+  }).join('') + (orphan.length ? `
+    <div class="group-head unassigned"><div class="g-avatar">${ICONS.paw}</div>
+      <div class="g-name">未归入指令</div><div class="g-count">${orphan.length} 个故事</div></div>
+    ${orphan.map(st=>{
+      const ch = characters.find(c=>c.id === st.characterId);
+      return storyRowHtml(st, ch ? ch.name : '');
+    }).join('')}` : '');
+  body.querySelectorAll('[data-instruction]').forEach(h=>{
+    h.addEventListener('click', ()=> openInstructionDetail(h.dataset.instruction));
+  });
+  bindStoryRows(body);
+}
+
+/* ================= Character detail =================
+   One character's whole body of work, grouped by the instruction each story
+   came from. */
+async function openCharacterDetail(characterId){
+  const [character, allStories, instructions] = await Promise.all([
+    characterId ? dbGet('characters', characterId) : null, getStories(), getInstructions()
+  ]);
+  const mine = allStories.filter(st=>(st.characterId||'') === (characterId||''));
+  const buckets = groupStoriesByInstruction(mine, instructions);
+  const overlay = openModal(`<div id="charMount"></div>`);
+  overlay.querySelector('.modal-sheet').style.maxHeight = '92vh';
+  const name = character ? character.name : '未指定角色';
+  overlay.querySelector('#charMount').innerHTML = `
+    <div class="modal-header"><h2>角色</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
     <div class="modal-body">
       <div class="detail-cover-row">
-        <div class="detail-cover">${book.cover?`<img src="${book.cover}">`:ICONS.bookOpen}</div>
+        <div class="g-avatar" style="width:56px; height:56px; border-radius:14px; font-size:20px;">${character?avatarOrInitial(character):ICONS.paw}</div>
         <div style="flex:1;">
-          <div class="detail-title">${escapeHtml(book.title)}</div>
+          <div class="detail-title">${escapeHtml(name)}</div>
+          <div class="meta">${mine.length} 个故事 · ${buckets.filter(b=>b.instruction).length} 个指令</div>
+        </div>
+      </div>
+      ${character ? `<div class="btn-row"><button class="btn sm" id="editCharBtn">编辑角色</button><button class="btn sm" id="charVoiceBtn">声音绑定</button></div>` : ''}
+      <div id="charStories"></div>
+    </div>`;
+  const mount = overlay.querySelector('#charStories');
+  mount.innerHTML = buckets.length ? buckets.map(bk=>`
+    <div class="section-title">${bk.instruction ? escapeHtml(bk.instruction.title) : '未归入指令'}</div>
+    ${bk.stories.map(st=>storyRowHtml(st)).join('')}
+  `).join('') : `<div class="hint-text">这个角色还没有故事</div>`;
+  bindStoryRows(mount);
+  mount.querySelectorAll('[data-story]').forEach(r=>{
+    r.addEventListener('click', ()=> closeModal(overlay));
+  });
+  overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
+  const editBtn = overlay.querySelector('#editCharBtn');
+  if(editBtn) editBtn.addEventListener('click', ()=> openCharacterEditor(character, async ()=>{ closeModal(overlay); await refreshShelf(); }));
+  const voiceBtn = overlay.querySelector('#charVoiceBtn');
+  if(voiceBtn) voiceBtn.addEventListener('click', ()=> openVoiceBindingSheet(character));
+}
+
+/* ================= Instruction detail =================
+   The same instruction run through several characters. Each row below is a
+   completely separate story — they are siblings, not chapters. */
+async function openInstructionDetail(instructionId){
+  const [instruction, allStories, characters] = await Promise.all([
+    dbGet('instructions', instructionId), getStories(), getAllCharacters()
+  ]);
+  if(!instruction) return;
+  const mine = allStories.filter(st=>st.instructionId === instructionId);
+  const buckets = groupStoriesByCharacter(mine, characters);
+  const overlay = openModal(`<div id="insMount"></div>`);
+  overlay.querySelector('.modal-sheet').style.maxHeight = '92vh';
+  overlay.querySelector('#insMount').innerHTML = `
+    <div class="modal-header"><h2>指令 / 系列</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+    <div class="modal-body">
+      <div class="detail-title">${escapeHtml(instruction.title)}</div>
+      <div class="meta" style="margin:4px 0 10px;">${mine.length} 个角色各自的故事</div>
+      ${instruction.prompt ? `
+        <div class="section-title">指令内容</div>
+        <div style="font-size:13px; line-height:1.65; color:var(--ink-soft); white-space:pre-wrap;">${escapeHtml(instruction.prompt)}</div>` : ''}
+      <div class="btn-row">
+        <button class="btn sm" id="editInsBtn">编辑指令</button>
+        <button class="btn sm" id="addStoryToInsBtn">为角色新建故事</button>
+        <button class="btn sm danger" id="delInsBtn">删除指令</button>
+      </div>
+      <div id="insStories"></div>
+    </div>`;
+  const mount = overlay.querySelector('#insStories');
+  mount.innerHTML = buckets.length ? buckets.map(bk=>`
+    <div class="section-title">${escapeHtml(bk.character ? bk.character.name : '未指定角色')}</div>
+    ${bk.stories.map(st=>storyRowHtml(st)).join('')}
+  `).join('') : `<div class="hint-text">这个指令下面还没有故事</div>`;
+  bindStoryRows(mount);
+  mount.querySelectorAll('[data-story]').forEach(r=> r.addEventListener('click', ()=> closeModal(overlay)));
+  overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
+  overlay.querySelector('#editInsBtn').addEventListener('click', ()=>
+    openInstructionEditor(instruction, async ()=>{ closeModal(overlay); await refreshShelf(); }));
+  overlay.querySelector('#addStoryToInsBtn').addEventListener('click', ()=>{
+    closeModal(overlay);
+    openStoryWizard({ instructionId });
+  });
+  overlay.querySelector('#delInsBtn').addEventListener('click', async ()=>{
+    // Deleting the grouping must never delete the stories under it.
+    if(!confirm('删除这个指令?下面的 ' + mine.length + ' 个故事会保留,只是变成"未归入指令"。')) return;
+    for(const st of mine){ st.instructionId = ''; st.updatedAt = Date.now(); await dbPut('stories', st); }
+    await dbDelete('instructions', instructionId);
+    closeModal(overlay);
+    showToast('已删除指令,故事已保留');
+    await refreshShelf();
+  });
+}
+
+/* ================= Instruction editor ================= */
+function openInstructionEditor(instruction, onSaved){
+  const isNew = !instruction;
+  const overlay = openModal(`
+    <div class="modal-header"><h2>${isNew?'新建':'编辑'}指令 / 系列</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+    <div class="modal-body">
+      <label class="field-label">名称</label>
+      <input type="text" id="insTitle" value="${escapeAttr(instruction?.title||'')}" placeholder="例如: 雨天见面">
+      <label class="field-label">指令内容 / 主题描述(可选)</label>
+      <textarea id="insPrompt" style="min-height:120px;" placeholder="拿去生成故事的那段指令,或者这个系列的主题说明">${escapeHtml(instruction?.prompt||'')}</textarea>
+      <div class="hint-text">同一个指令可以被很多角色使用,每个角色生成出来的故事各自独立、互不影响。</div>
+      <label class="field-label">备注(可选)</label>
+      <input type="text" id="insNote" value="${escapeAttr(instruction?.note||'')}" placeholder="">
+      <div class="btn-row"><button class="btn primary block" id="saveInsBtn">保存</button></div>
+    </div>`);
+  overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
+  overlay.querySelector('#saveInsBtn').addEventListener('click', async ()=>{
+    const title = overlay.querySelector('#insTitle').value.trim();
+    if(!title){ showToast('请填写名称'); return; }
+    await dbPut('instructions', {
+      id: instruction?.id || uid(),
+      title,
+      prompt: overlay.querySelector('#insPrompt').value,
+      note: overlay.querySelector('#insNote').value.trim(),
+      tags: instruction?.tags || [],
+      createdAt: instruction?.createdAt || Date.now(),
+      updatedAt: Date.now()
+    });
+    closeModal(overlay);
+    showToast('已保存');
+    onSaved ? onSaved() : await refreshShelf();
+  });
+}
+
+/* ================= Character editor ================= */
+function openCharacterEditor(character, onSaved){
+  const isNew = !character;
+  const overlay = openModal(`
+    <div class="modal-header"><h2>${isNew?'新建':'编辑'}角色</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+    <div class="modal-body">
+      <label class="field-label">角色名</label>
+      <input type="text" id="chName" value="${escapeAttr(character?.name||'')}" placeholder="角色的名字">
+      <label class="field-label">默认身份</label>
+      <div class="chip-row">
+        <button class="choice-chip" data-role="char">char(角色)</button>
+        <button class="choice-chip" data-role="user">user(我)</button>
+      </div>
+      <label class="field-label">备注(可选)</label>
+      <textarea id="chNote" style="min-height:70px;">${escapeHtml(character?.note||'')}</textarea>
+      <div class="btn-row"><button class="btn primary block" id="saveChBtn">保存</button></div>
+      ${!isNew ? `<div class="btn-row"><button class="btn danger block" id="delChBtn">删除角色</button></div>` : ''}
+    </div>`);
+  let role = character?.roleDefault || 'char';
+  const paint = ()=> overlay.querySelectorAll('[data-role]').forEach(b=>b.classList.toggle('selected', b.dataset.role===role));
+  paint();
+  overlay.querySelectorAll('[data-role]').forEach(b=> b.addEventListener('click', ()=>{ role = b.dataset.role; paint(); }));
+  overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
+  overlay.querySelector('#saveChBtn').addEventListener('click', async ()=>{
+    const name = overlay.querySelector('#chName').value.trim();
+    if(!name){ showToast('请填写角色名'); return; }
+    await dbPut('characters', {
+      id: character?.id || uid(), name, roleDefault: role,
+      avatar: character?.avatar || '', note: overlay.querySelector('#chNote').value,
+      createdAt: character?.createdAt || Date.now()
+    });
+    closeModal(overlay);
+    showToast('已保存');
+    onSaved ? onSaved() : await refreshShelf();
+  });
+  const del = overlay.querySelector('#delChBtn');
+  if(del) del.addEventListener('click', async ()=>{
+    const stories = (await getStories()).filter(st=>st.characterId === character.id);
+    // Same rule as instructions: removing the grouping keeps the content.
+    if(!confirm('删除这个角色?它名下的 ' + stories.length + ' 个故事会保留,只是变成"未指定角色"。')) return;
+    for(const st of stories){ st.characterId = ''; st.updatedAt = Date.now(); await dbPut('stories', st); }
+    await dbDelete('characters', character.id);
+    closeModal(overlay);
+    showToast('已删除角色,故事已保留');
+    onSaved ? onSaved() : await refreshShelf();
+  });
+}
+
+/* ================= Character voice binding =================
+   The binding lives in its own store keyed by character, not on the story, so
+   one character keeps the same voice across every story they appear in and
+   swapping TTS provider never touches story content. */
+async function getVoiceBinding(characterId){
+  if(!characterId) return null;
+  const all = await dbGetAll('voiceBindings');
+  return all.find(b=>b.characterId === characterId) || null;
+}
+async function openVoiceBindingSheet(character){
+  if(!character) return;
+  const [binding, presets] = await Promise.all([getVoiceBinding(character.id), getPresetsByKind('voice')]);
+  const overlay = openModal(`
+    <div class="modal-header"><h2>${escapeHtml(character.name)} 的声音</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+    <div class="modal-body">
+      <label class="field-label">语音预设</label>
+      <select id="vbPreset">
+        <option value="">不指定(用旁白声音)</option>
+        ${presets.map(p=>`<option value="${p.id}" ${binding?.presetId===p.id?'selected':''}>${escapeHtml(p.name)}</option>`).join('')}
+      </select>
+      ${presets.length ? '' : `<div class="hint-text">还没有语音预设,去 设置 → 语音朗读 里新建一个。</div>`}
+      <label class="field-label">音色 ID(留空则用预设里的)</label>
+      <input type="text" id="vbVoice" value="${escapeAttr(binding?.voiceId||'')}" placeholder="覆盖预设的音色">
+      <div class="hint-text">绑定保存在角色上,这个角色出现在任何故事里都会用同一个声音。</div>
+      <div class="btn-row"><button class="btn primary block" id="vbSave">保存</button></div>
+      ${binding ? `<div class="btn-row"><button class="btn danger block" id="vbClear">解除绑定</button></div>` : ''}
+    </div>`);
+  overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
+  overlay.querySelector('#vbSave').addEventListener('click', async ()=>{
+    await dbPut('voiceBindings', {
+      id: binding?.id || uid(),
+      characterId: character.id,
+      presetId: overlay.querySelector('#vbPreset').value,
+      voiceId: overlay.querySelector('#vbVoice').value.trim(),
+      updatedAt: Date.now()
+    });
+    closeModal(overlay);
+    showToast('已保存声音绑定');
+  });
+  const clear = overlay.querySelector('#vbClear');
+  if(clear) clear.addEventListener('click', async ()=>{
+    await dbDelete('voiceBindings', binding.id);
+    closeModal(overlay);
+    showToast('已解除绑定');
+  });
+}
+
+/* ================= Story detail =================
+   Episodes are grouped by type so 正篇/章节 and 番外 read as separate lists,
+   which is how the content is actually organised. */
+async function openStoryDetail(storyId, openEpisodeId){
+  const story = await dbGet('stories', storyId);
+  if(!story) return;
+  const overlay = openModal(`<div id="detailMount" style="max-height:100%;"></div>`);
+  overlay.querySelector('.modal-sheet').style.maxHeight = '92vh';
+  await paintDetail(overlay, story);
+  if(openEpisodeId) openReaderPage(overlay, story, openEpisodeId);
+}
+async function paintDetail(overlay, story){
+  const mount = overlay.querySelector('#detailMount');
+  const eps = sortedEpisodes(story);
+  const chapters = eps.filter(e=>e.type !== 'extra');
+  const extras = eps.filter(e=>e.type === 'extra');
+  const [character, instruction] = await Promise.all([
+    story.characterId ? dbGet('characters', story.characterId) : null,
+    story.instructionId ? dbGet('instructions', story.instructionId) : null
+  ]);
+  const roleList = (story.participants||[]).map(p=>`<span class="p-role-tag ${p.role}">${escapeHtml(p.name)}</span>`).join(' ');
+  const isHtml = story.kind === 'html';
+
+  const epList = (list, emptyText)=> list.length ? list.map(en=>`
+    <div class="entry-item" data-entry="${en.id}">
+      <div class="t">${escapeHtml(en.title)}</div>
+      ${en.prompt ? `<div class="m" style="color:var(--accent); margin-top:4px;">${escapeHtml(en.prompt.length>44?en.prompt.slice(0,44)+'…':en.prompt)}</div>` : ''}
+      <div class="m">${new Date(en.createdAt).toLocaleDateString()} · ${(en.content||'').replace(/<[^>]+>/g,'').length} 字${
+        (story.progress && story.progress.episodeId === en.id) ? ' · 上次读到这里' : ''}</div>
+    </div>`).join('') : `<div class="hint-text">${emptyText}</div>`;
+
+  mount.innerHTML = `
+    <div class="modal-header"><h2>${isHtml?'HTML 作品':'故事'}</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+    <div class="modal-body">
+      <div class="detail-cover-row">
+        <div class="detail-cover">${story.cover?`<img src="${story.cover}">`:(isHtml?ICONS.code:ICONS.bookOpen)}</div>
+        <div style="flex:1;">
+          <div class="detail-title">${escapeHtml(story.title)}</div>
+          <div class="crumb">
+            ${character ? `<span>角色</span><b>${escapeHtml(character.name)}</b>` : `<span>未指定角色</span>`}
+            ${instruction ? `<span>·</span><span>指令</span><b>${escapeHtml(instruction.title)}</b>` : ''}
+          </div>
           <div class="meta" style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:6px;">${roleList}</div>
           <div class="meta" style="display:flex; flex-wrap:wrap; gap:5px;">
-            ${(book.tags||[]).map(t=>`<span class="mini-tag">#${escapeHtml(t)}</span>`).join('')}
+            ${(story.tags||[]).map(t=>`<span class="mini-tag">#${escapeHtml(t)}</span>`).join('')}
           </div>
         </div>
       </div>
       <div class="btn-row">
         <button class="btn sm" id="editBookBtn">编辑信息</button>
-        <button class="btn sm danger" id="deleteBookBtn">删除书籍</button>
+        <button class="btn sm" id="moveStoryBtn">改归类</button>
+        <button class="btn sm danger" id="deleteBookBtn">删除</button>
       </div>
-      ${book.type==='novel' ? `
+      ${(!isHtml && story.background) ? `
         <div class="section-title">背景</div>
-        <div style="font-size:13px; line-height:1.6; color:var(--ink-soft); white-space:pre-wrap;">${escapeHtml(book.background||'(暂无背景设定)')}</div>
+        <div style="font-size:13px; line-height:1.6; color:var(--ink-soft); white-space:pre-wrap;">${escapeHtml(story.background)}</div>
       ` : ''}
-      <div class="section-title">${book.type==='extra'?'番外剧情':'章节'}(${entries.length})</div>
-      <div class="entry-list" id="entryList"></div>
-      <button class="add-participant-btn" id="addEntryBtn" style="margin-top:10px;">+ ${book.type==='extra'?'添加番外':'添加章节'}</button>
-    </div>
-  `;
-  const entryList = mount.querySelector('#entryList');
-  if(!entries.length){
-    entryList.innerHTML = `<div class="hint-text">还没有内容</div>`;
-  } else {
-    entryList.innerHTML = entries.map(en=>`
-      <div class="entry-item" data-entry="${en.id}">
-        <div class="t">${escapeHtml(en.title)}</div>
-        ${(book.type==='extra' && en.prompt) ? `<div class="m" style="color:var(--accent); margin-top:4px;">${escapeHtml(en.prompt.length>44?en.prompt.slice(0,44)+'…':en.prompt)}</div>` : ''}
-        <div class="m">${new Date(en.createdAt).toLocaleDateString()} · ${(en.content||'').replace(/<[^>]+>/g,'').length} 字</div>
-      </div>
-    `).join('');
-    entryList.querySelectorAll('.entry-item').forEach(item=>{
-      item.addEventListener('click', ()=>openReaderPage(overlay, book, item.dataset.entry));
-    });
-  }
+      <div class="section-title">${isHtml?'页面':'正篇 / 章节'}(${chapters.length})</div>
+      <div class="entry-list" id="chapterList">${epList(chapters, isHtml?'还没有页面':'还没有正篇内容')}</div>
+      ${!isHtml ? `
+        <div class="section-title">番外(${extras.length})</div>
+        <div class="entry-list" id="extraList">${epList(extras, '还没有番外')}</div>` : ''}
+      <button class="add-participant-btn" id="addEntryBtn" style="margin-top:10px;">+ ${isHtml?'添加页面':'添加正篇 / 番外'}</button>
+    </div>`;
+
+  mount.querySelectorAll('.entry-item[data-entry]').forEach(item=>{
+    item.addEventListener('click', ()=>openReaderPage(overlay, story, item.dataset.entry));
+  });
   mount.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
   mount.querySelector('#deleteBookBtn').addEventListener('click', async ()=>{
-    if(!confirm('确定删除这本书吗?此操作不可撤销。')) return;
-    await dbDelete('books', book.id);
+    if(!confirm('确定删除《' + story.title + '》吗?此操作不可撤销。')) return;
+    await dbDelete('stories', story.id);
     closeModal(overlay);
     showToast('已删除');
     await refreshShelf();
   });
-  mount.querySelector('#editBookBtn').addEventListener('click', ()=>openEditBook(overlay, book));
-  mount.querySelector('#addEntryBtn').addEventListener('click', ()=>openAddEntry(overlay, book));
+  mount.querySelector('#editBookBtn').addEventListener('click', ()=>openEditStory(overlay, story));
+  mount.querySelector('#moveStoryBtn').addEventListener('click', ()=>openMoveStorySheet(overlay, story));
+  mount.querySelector('#addEntryBtn').addEventListener('click', ()=>openAddEntry(overlay, story));
+}
+
+/* Re-pointing a story at a different character / instruction is a two-field
+   edit precisely because nothing else references them. */
+async function openMoveStorySheet(parentOverlay, story){
+  const [characters, instructions] = await Promise.all([getAllCharacters(), getInstructions()]);
+  const overlay = openModal(`
+    <div class="modal-header"><h2>改归类</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+    <div class="modal-body">
+      <label class="field-label">这是谁的故事</label>
+      <select id="mvCharacter">
+        <option value="">未指定角色</option>
+        ${characters.map(c=>`<option value="${c.id}" ${story.characterId===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
+      </select>
+      <label class="field-label">归入哪个指令 / 系列</label>
+      <select id="mvInstruction">
+        <option value="">不归入任何指令</option>
+        ${instructions.map(i=>`<option value="${i.id}" ${story.instructionId===i.id?'selected':''}>${escapeHtml(i.title)}</option>`).join('')}
+      </select>
+      <div class="hint-text">改归类只动这两个关联,故事本身的内容一个字都不会变。</div>
+      <div class="btn-row"><button class="btn primary block" id="mvSave">保存</button></div>
+    </div>`);
+  overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
+  overlay.querySelector('#mvSave').addEventListener('click', async ()=>{
+    story.characterId = overlay.querySelector('#mvCharacter').value;
+    story.instructionId = overlay.querySelector('#mvInstruction').value;
+    story.updatedAt = Date.now();
+    await dbPut('stories', story);
+    closeModal(overlay);
+    showToast('已改归类');
+    await paintDetail(parentOverlay, story);
+    await refreshShelf();
+  });
 }
 
 /* ================= Mixed text/HTML rendering ================= */
@@ -2620,10 +3176,10 @@ function safeAreaInset(side){
   probe.remove();
   return h;
 }
-function buildReaderDoc(entry, book, insets){
+function buildReaderDoc(entry, story, insets){
   const t = currentThemeVars();
-  const rs = book.readerSettings || {};
-  const promptBlock = (book.type==='extra' && entry.prompt) ?
+  const rs = story.readerSettings || {};
+  const promptBlock = entry.prompt ?
     `<div class="epigraph mm-prompt">${escapeHtml(entry.prompt).replace(/\n/g,'<br>')}</div>` : '';
   const bodyHtml = renderContentHtml(entry.content || '') || `<p class="mm-p" style="color:${t.inkSoft};">(还没有正文内容)</p>`;
   const bg = rs.background ? rs.background : t.bg;
@@ -3008,22 +3564,26 @@ async function doCopyText(text){
   try{ document.execCommand('copy'); }catch(e2){}
   document.body.removeChild(ta);
 }
-function composeCopyText(book, entry, includeExtra, useSummary){
-  if(book.type === 'extra'){
+function composeCopyText(story, entry, includeExtra, useSummary){
+  // A standalone 番外 copies on its own; anything sitting in the ordered run of
+  // 正篇/章节 copies together with everything before it, which is what you need
+  // to hand a model when continuing.
+  if(entry.type === 'extra'){
     const parts = [];
-    if(includeExtra && entry.prompt) parts.push('【番外要求】\n' + entry.prompt.trim());
+    if(entry.prompt) parts.push('【番外要求】\n' + entry.prompt.trim());
+    if(includeExtra && story.background) parts.push('【背景设定】\n' + story.background.trim());
     parts.push(entry.content || '');
     return parts.join('\n\n');
   }
   const parts = [];
-  if(includeExtra && book.background) parts.push('【背景设定】\n' + book.background.trim());
-  const chapters = (book.chapters||[]).slice().sort((a,b)=>a.order-b.order);
+  if(includeExtra && story.background) parts.push('【背景设定】\n' + story.background.trim());
+  const chapters = sortedEpisodes(story).filter(e=>e.type !== 'extra');
   const idx = chapters.findIndex(c=>c.id===entry.id);
   // With a generated recap, earlier chapters collapse into the recap and only
   // the chapter being read is carried over verbatim — otherwise a long novel
   // produces a copy far too big to paste anywhere.
-  if(useSummary && book.summary && book.summary.text){
-    parts.push('【前情提要】\n' + book.summary.text.trim());
+  if(useSummary && story.summary && story.summary.text){
+    parts.push('【前情提要】\n' + story.summary.text.trim());
     if(idx >= 0) parts.push('【'+entry.title+'】\n'+(entry.content||''));
     return parts.join('\n\n');
   }
@@ -3031,15 +3591,15 @@ function composeCopyText(book, entry, includeExtra, useSummary){
   upTo.forEach(c=> parts.push('【'+c.title+'】\n'+(c.content||'')));
   return parts.join('\n\n');
 }
-function openCopySheet(book, entry){
-  const isExtra = book.type === 'extra';
-  const hasExtra = isExtra ? !!entry.prompt : !!book.background;
-  const hasSummary = !isExtra && !!(book.summary && book.summary.text);
-  const label = isExtra ? '包含番外要求' : '包含背景设定';
+function openCopySheet(story, entry){
+  const isExtra = entry.type === 'extra';
+  const hasExtra = !!story.background;
+  const hasSummary = !isExtra && !!(story.summary && story.summary.text);
+  const label = '包含背景设定';
   const overlay = openModal(`
     <div class="modal-header"><h2>一键复制</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
     <div class="modal-body">
-      ${!isExtra ? `<div class="hint-text" style="margin-bottom:12px;">将复制背景 + 从第一章到本章为止的正文,方便去续写下一章。</div>` : ''}
+      <div class="hint-text" style="margin-bottom:12px;">${isExtra ? '将复制这条番外的要求和正文。' : '将复制背景 + 从第一章到本章为止的正文,方便去续写下一章。'}</div>
       ${hasSummary ? `
         <label style="display:flex; align-items:center; gap:8px; font-size:13px; margin:4px 0 4px;">
           <input type="checkbox" id="useSummaryChk" style="width:16px; height:16px;">
@@ -3060,7 +3620,7 @@ function openCopySheet(book, entry){
   overlay.querySelector('#doCopyBtn').addEventListener('click', async ()=>{
     const chk = overlay.querySelector('#includeExtraChk');
     const sumChk = overlay.querySelector('#useSummaryChk');
-    const text = composeCopyText(book, entry, chk ? chk.checked : false, sumChk ? sumChk.checked : false);
+    const text = composeCopyText(story, entry, chk ? chk.checked : false, sumChk ? sumChk.checked : false);
     await doCopyText(text);
     closeModal(overlay);
     showToast('已复制');
@@ -3068,8 +3628,8 @@ function openCopySheet(book, entry){
 }
 
 /* ================= Reader appearance settings ================= */
-async function openReaderSettingsSheet(book, onSaved){
-  const rs = book.readerSettings || (book.readerSettings = { background:'', pageEffect:'scroll', customCss:'', fontUrl:'' });
+async function openReaderSettingsSheet(story, onSaved){
+  const rs = story.readerSettings || (story.readerSettings = { background:'', pageEffect:'scroll', customCss:'', fontUrl:'' });
   const [voicePresets, summaryPresets] = await Promise.all([getPresetsByKind('voice'), getPresetsByKind('summary')]);
   const presetOptions = (list, selected)=> `<option value="">不使用</option>` + list.map(pr=>
     `<option value="${pr.id}" ${selected===pr.id?'selected':''}>${escapeHtml(pr.name)}</option>`).join('');
@@ -3105,7 +3665,7 @@ async function openReaderSettingsSheet(book, onSaved){
       <select id="voicePresetSelect">${presetOptions(voicePresets, rs.voicePresetId||'')}</select>
       ${voicePresets.length ? '' : `<div class="hint-text">还没有语音预设,去 设置 → 语音朗读 里新建一个。</div>`}
 
-      ${book.type === 'novel' ? `
+      ${story.kind !== 'html' ? `
         <label class="field-label">前文总结预设</label>
         <select id="summaryPresetSelect">${presetOptions(summaryPresets, rs.summaryPresetId||'')}</select>
         ${summaryPresets.length ? '' : `<div class="hint-text">还没有总结预设,去 设置 → AI总结前文 里新建一个。</div>`}
@@ -3153,17 +3713,17 @@ async function openReaderSettingsSheet(book, onSaved){
   });
 
   overlay.querySelector('#saveReaderSettingsBtn').addEventListener('click', async ()=>{
-    book.readerSettings = {
+    story.readerSettings = {
       background: chosenBg,
       pageEffect: chosenEffect,
       showPageNav: overlay.querySelector('#showPageNavChk').checked,
       customCss: overlay.querySelector('#customCssInputR').value,
       fontUrl: overlay.querySelector('#fontUrlInput').value.trim(),
       voicePresetId: (overlay.querySelector('#voicePresetSelect')||{}).value || '',
-      summaryPresetId: (overlay.querySelector('#summaryPresetSelect')||{}).value || (book.type==='novel' ? '' : (rs.summaryPresetId||''))
+      summaryPresetId: (overlay.querySelector('#summaryPresetSelect')||{}).value || ''
     };
-    book.updatedAt = Date.now();
-    await dbPut('books', book);
+    story.updatedAt = Date.now();
+    await dbPut('stories', story);
     closeModal(overlay);
     showToast('阅读设置已保存');
     onSaved && onSaved();
@@ -3171,8 +3731,8 @@ async function openReaderSettingsSheet(book, onSaved){
 }
 
 /* ================= Fullscreen reading page ================= */
-function openReaderPage(parentOverlay, book, entryId){
-  const list = book.type==='extra' ? book.episodes : book.chapters;
+function openReaderPage(parentOverlay, story, entryId){
+  const list = story.episodes || [];
   const entry = list.find(e=>e.id===entryId);
   if(!entry) return;
 
@@ -3232,7 +3792,7 @@ function openReaderPage(parentOverlay, book, entryId){
   function paintRendered(){
     setCollapsed(false);
     const body = reader.querySelector('#readerBody');
-    const rs = book.readerSettings || {};
+    const rs = story.readerSettings || {};
     const isPaginate = isPaginatedEffect(rs.pageEffect || 'scroll');
     // The nav bar is optional: with it off you page by swiping or tapping the
     // left/right edge, which is what most people want on a phone.
@@ -3245,14 +3805,14 @@ function openReaderPage(parentOverlay, book, entryId){
       top: topbar.offsetHeight || 54,
       bottom: wantNav ? (pagenav.offsetHeight || 48) : safeAreaInset('bottom')
     };
-    body.innerHTML = `<iframe id="readerIframe" sandbox="allow-scripts" srcdoc="${escapeAttr(buildReaderDoc(entry, book, insets))}"></iframe>`;
+    body.innerHTML = `<iframe id="readerIframe" sandbox="allow-scripts" srcdoc="${escapeAttr(buildReaderDoc(entry, story, insets))}"></iframe>`;
   }
 
   function paintEdit(){
     setCollapsed(false);
     const body = reader.querySelector('#readerBody');
     pagenav.style.display = 'none';
-    const isExtra = book.type === 'extra';
+    const isExtra = entry.type === 'extra';
     body.innerHTML = `
       <div class="reader-edit-body">
         <label class="field-label">标题</label>
@@ -3273,12 +3833,12 @@ function openReaderPage(parentOverlay, book, entryId){
       entry.title = body.querySelector('#rTitle').value.trim() || entry.title;
       if(isExtra) entry.prompt = body.querySelector('#rPrompt').value;
       entry.content = body.querySelector('#rContent').value;
-      book.updatedAt = Date.now();
-      await dbPut('books', book);
+      story.updatedAt = Date.now();
+      await dbPut('stories', story);
       reader.querySelector('.r-title').textContent = entry.title;
       paintRendered();
       showToast('已保存');
-      if(parentOverlay) paintDetail(parentOverlay, book);
+      if(parentOverlay) await paintDetail(parentOverlay, story);
       await refreshShelf();
     });
   }
@@ -3290,7 +3850,7 @@ function openReaderPage(parentOverlay, book, entryId){
         <div class="action-sheet-item" id="moreEdit"><div class="glyph">${ICONS.edit}</div><div class="txt"><div class="t1">编辑正文</div></div></div>
         <div class="action-sheet-item" id="moreSettings"><div class="glyph">${ICONS.gear}</div><div class="txt"><div class="t1">阅读设置</div><div class="t2">背景 / 翻页方式 / 自定义CSS / 字体</div></div></div>
         <div class="action-sheet-item" id="moreRead"><div class="glyph">${ICONS.speaker}</div><div class="txt"><div class="t1">朗读正文</div><div class="t2">用阅读设置里选的语音预设合成并播放</div></div></div>
-        ${book.type==='novel' ? `<div class="action-sheet-item" id="moreSummary"><div class="glyph">${ICONS.sparkle}</div><div class="txt"><div class="t1">前文总结</div><div class="t2">用AI把前面的正文压成前情提要</div></div></div>` : ''}
+        ${story.kind !== 'html' ? `<div class="action-sheet-item" id="moreSummary"><div class="glyph">${ICONS.sparkle}</div><div class="txt"><div class="t1">前文总结</div><div class="t2">用AI把前面的正文压成前情提要</div></div></div>` : ''}
         <div class="action-sheet-item" id="moreCopy"><div class="glyph">${ICONS.copy}</div><div class="txt"><div class="t1">一键复制</div><div class="t2">复制正文,方便去续写</div></div></div>
         <div class="action-sheet-item" id="moreDelete"><div class="glyph">${ICONS.trash}</div><div class="txt"><div class="t1" style="color:var(--danger);">删除这条</div></div></div>
       </div>
@@ -3299,22 +3859,22 @@ function openReaderPage(parentOverlay, book, entryId){
     sheet.querySelector('#moreEdit').addEventListener('click', ()=>{ closeModal(sheet); paintEdit(); });
     sheet.querySelector('#moreSettings').addEventListener('click', ()=>{
       closeModal(sheet);
-      openReaderSettingsSheet(book, ()=> paintRendered());
+      openReaderSettingsSheet(story, ()=> paintRendered());
     });
-    sheet.querySelector('#moreRead').addEventListener('click', ()=>{ closeModal(sheet); startReadAloud(book, entry); });
+    sheet.querySelector('#moreRead').addEventListener('click', ()=>{ closeModal(sheet); startReadAloud(story, entry); });
     const summaryItem = sheet.querySelector('#moreSummary');
-    if(summaryItem) summaryItem.addEventListener('click', ()=>{ closeModal(sheet); openSummarySheet(book, entry); });
-    sheet.querySelector('#moreCopy').addEventListener('click', ()=>{ closeModal(sheet); openCopySheet(book, entry); });
+    if(summaryItem) summaryItem.addEventListener('click', ()=>{ closeModal(sheet); openSummarySheet(story, entry); });
+    sheet.querySelector('#moreCopy').addEventListener('click', ()=>{ closeModal(sheet); openCopySheet(story, entry); });
     sheet.querySelector('#moreDelete').addEventListener('click', async ()=>{
       closeModal(sheet);
       if(!confirm('删除这条内容?')) return;
       const idx = list.findIndex(e=>e.id===entryId);
       list.splice(idx,1);
-      book.updatedAt = Date.now();
-      await dbPut('books', book);
+      story.updatedAt = Date.now();
+      await dbPut('stories', story);
       closeReader();
       showToast('已删除');
-      if(parentOverlay) paintDetail(parentOverlay, book);
+      if(parentOverlay) await paintDetail(parentOverlay, story);
       await refreshShelf();
     });
   });
@@ -3332,77 +3892,82 @@ function openReaderPage(parentOverlay, book, entryId){
 }
 
 
-function openAddEntry(parentOverlay, book){
+function openAddEntry(parentOverlay, story){
+  const isHtml = story.kind === 'html';
+  let type = isHtml ? 'chapter' : 'chapter';
   const overlay = openModal(`
-    <div class="modal-header"><h2>${book.type==='extra'?'添加番外':'添加章节'}</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
-    <div class="modal-body" id="addEntryBody"></div>
-  `);
+    <div class="modal-header"><h2>${isHtml?'添加页面':'添加内容'}</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+    <div class="modal-body">
+      ${!isHtml ? `
+        <label class="field-label">这条是?</label>
+        <div class="chip-row">
+          <button class="choice-chip selected" data-eptype="chapter">正篇 / 章节</button>
+          <button class="choice-chip" data-eptype="extra">番外</button>
+        </div>
+        <label class="field-label" id="promptLabel" style="display:none;">番外要求(剧情主题/设定要求)</label>
+        <textarea id="epPrompt" style="min-height:70px; display:none;" placeholder="例如: 生成一段雨天便利店偶遇的番外..."></textarea>
+      ` : ''}
+      <label class="field-label">标题</label>
+      <input type="text" id="epTitle" placeholder="${isHtml?'这个页面的名字':'第 '+ (sortedEpisodes(story).filter(e=>e.type!=='extra').length+1) +' 章 ...'}">
+      <label class="field-label">${isHtml?'HTML 源码':'正文'}</label>
+      <textarea id="epContent" style="min-height:180px;${isHtml?' font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px;':''}" placeholder="${isHtml?'把整段 HTML 贴进来,会在独立 iframe 里运行':''}"></textarea>
+      <div class="btn-row"><button class="btn primary block" id="confirmAdd">添加</button></div>
+    </div>`);
   overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
-  const body = overlay.querySelector('#addEntryBody');
-  if(book.type==='extra'){
-    body.innerHTML = `
-      <label class="field-label">番外要求(剧情主题/设定要求)</label>
-      <textarea id="epPrompt" style="min-height:70px;" placeholder="例如: 生成一段雨天便利店偶遇的番外..."></textarea>
-      <label class="field-label">番外剧情标题</label>
-      <input type="text" id="epTitle">
-      <label class="field-label">正文</label>
-      <textarea id="epContent" style="min-height:160px;"></textarea>
-      <div class="btn-row"><button class="btn primary block" id="confirmAdd">添加</button></div>
-    `;
-    body.querySelector('#confirmAdd').addEventListener('click', async ()=>{
-      const title = body.querySelector('#epTitle').value.trim() || '未命名番外';
-      const prompt = body.querySelector('#epPrompt').value;
-      const content = body.querySelector('#epContent').value;
-      book.episodes = book.episodes || [];
-      book.episodes.push({ id: uid(), title, prompt, content, createdAt: Date.now() });
-      book.updatedAt = Date.now();
-      await dbPut('books', book);
-      closeModal(overlay);
-      paintDetail(parentOverlay, book);
-      await refreshShelf();
-    });
-  } else {
-    const nextOrder = (book.chapters||[]).length + 1;
-    body.innerHTML = `
-      <label class="field-label">章节标题</label>
-      <input type="text" id="chTitle" placeholder="第 ${nextOrder} 章 ...">
-      <label class="field-label">内容</label>
-      <textarea id="chContent" style="min-height:160px;"></textarea>
-      <div class="btn-row"><button class="btn primary block" id="confirmAdd">添加</button></div>
-    `;
-    body.querySelector('#confirmAdd').addEventListener('click', async ()=>{
-      const title = body.querySelector('#chTitle').value.trim() || ('第 '+nextOrder+' 章');
-      const content = body.querySelector('#chContent').value;
-      book.chapters = book.chapters || [];
-      book.chapters.push({ id: uid(), title, content, order: nextOrder, createdAt: Date.now() });
-      book.updatedAt = Date.now();
-      await dbPut('books', book);
-      closeModal(overlay);
-      paintDetail(parentOverlay, book);
-      await refreshShelf();
+  if(!isHtml){
+    const promptLabel = overlay.querySelector('#promptLabel');
+    const promptBox = overlay.querySelector('#epPrompt');
+    overlay.querySelectorAll('[data-eptype]').forEach(b=>{
+      b.addEventListener('click', ()=>{
+        type = b.dataset.eptype;
+        overlay.querySelectorAll('[data-eptype]').forEach(x=>x.classList.toggle('selected', x===b));
+        const showPrompt = type === 'extra';
+        promptLabel.style.display = showPrompt ? '' : 'none';
+        promptBox.style.display = showPrompt ? '' : 'none';
+      });
     });
   }
+  overlay.querySelector('#confirmAdd').addEventListener('click', async ()=>{
+    const promptBox = overlay.querySelector('#epPrompt');
+    const fallback = type === 'extra' ? '未命名番外' : (isHtml ? '未命名页面' : '未命名章节');
+    story.episodes = story.episodes || [];
+    story.episodes.push(makeEpisode({
+      title: overlay.querySelector('#epTitle').value.trim() || fallback,
+      type,
+      prompt: promptBox ? promptBox.value : '',
+      content: overlay.querySelector('#epContent').value,
+      order: nextEpisodeOrder(story)
+    }));
+    story.updatedAt = Date.now();
+    await dbPut('stories', story);
+    closeModal(overlay);
+    await paintDetail(parentOverlay, story);
+    await refreshShelf();
+  });
 }
 
-function openEditBook(parentOverlay, book){
+function openEditStory(parentOverlay, story){
   const overlay = openModal(`
     <div class="modal-header"><h2>编辑信息</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
     <div class="modal-body">
       <label class="field-label">封面</label>
       <label class="cover-upload" id="editCoverBox">
-        ${book.cover?`<img src="${book.cover}">`:'点击上传'}
+        ${story.cover?`<img src="${story.cover}">`:'点击上传'}
         <input type="file" accept="image/*" id="editCoverInput" style="display:none;">
       </label>
-      <label class="field-label">书名</label>
-      <input type="text" id="editTitle" value="${escapeAttr(book.title)}">
+      <label class="field-label">故事名</label>
+      <input type="text" id="editTitle" value="${escapeAttr(story.title)}">
       <label class="field-label">标签(逗号分隔)</label>
-      <input type="text" id="editTags" value="${escapeAttr((book.tags||[]).join(', '))}">
+      <input type="text" id="editTags" value="${escapeAttr((story.tags||[]).join(', '))}">
       <label class="field-label">分类</label>
-      <input type="text" id="editCategory" value="${escapeAttr(book.category||'')}">
+      <input type="text" id="editCategory" value="${escapeAttr(story.category||'')}">
+      ${story.kind !== 'html' ? `
+        <label class="field-label">背景设定</label>
+        <textarea id="editBackground" style="min-height:100px;">${escapeHtml(story.background||'')}</textarea>` : ''}
       <div class="section-title">参与角色</div>
       <div class="participant-list" id="editPList"></div>
       <button class="add-participant-btn" id="editAddParticipant" style="margin-top:10px;">+ 添加角色</button>
-      <div class="btn-row"><button class="btn primary block" id="saveBookBtn">保存</button></div>
+      <div class="btn-row"><button class="btn primary block" id="saveStoryBtn">保存</button></div>
     </div>
   `);
   overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
@@ -3416,8 +3981,8 @@ function openEditBook(parentOverlay, book){
         const scale = Math.min(1, 480/img.width);
         canvas.width = img.width*scale; canvas.height = img.height*scale;
         canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);
-        book.cover = canvas.toDataURL('image/jpeg',0.85);
-        overlay.querySelector('#editCoverBox').innerHTML = `<img src="${book.cover}"><input type="file" accept="image/*" id="editCoverInput" style="display:none;">`;
+        story.cover = canvas.toDataURL('image/jpeg',0.85);
+        overlay.querySelector('#editCoverBox').innerHTML = `<img src="${story.cover}"><input type="file" accept="image/*" id="editCoverInput" style="display:none;">`;
       };
       img.src = reader.result;
     };
@@ -3425,7 +3990,7 @@ function openEditBook(parentOverlay, book){
   });
   function paintEditParticipants(){
     const list = overlay.querySelector('#editPList');
-    list.innerHTML = (book.participants||[]).map((p,idx)=>`
+    list.innerHTML = (story.participants||[]).map((p,idx)=>`
       <div class="participant-row">
         <div class="p-avatar">${avatarOrInitial(p)}</div>
         <div class="p-info"><div class="p-name">${escapeHtml(p.name)}</div></div>
@@ -3434,34 +3999,45 @@ function openEditBook(parentOverlay, book){
       </div>
     `).join('') || `<div class="hint-text">暂无角色</div>`;
     list.querySelectorAll('[data-rm]').forEach(b=>{
-      b.addEventListener('click', ()=>{ book.participants.splice(parseInt(b.dataset.rm),1); paintEditParticipants(); });
+      b.addEventListener('click', ()=>{ story.participants.splice(parseInt(b.dataset.rm),1); paintEditParticipants(); });
     });
   }
   paintEditParticipants();
   overlay.querySelector('#editAddParticipant').addEventListener('click', ()=>{
     openAddParticipantSheet((p)=>{
-      book.participants = book.participants || [];
-      book.participants.push(p);
+      story.participants = story.participants || [];
+      story.participants.push(p);
       paintEditParticipants();
     });
   });
-  overlay.querySelector('#saveBookBtn').addEventListener('click', async ()=>{
-    book.title = overlay.querySelector('#editTitle').value.trim() || book.title;
-    book.tags = overlay.querySelector('#editTags').value.split(',').map(s=>s.trim()).filter(Boolean);
-    book.category = overlay.querySelector('#editCategory').value.trim();
-    book.updatedAt = Date.now();
-    await dbPut('books', book);
+  overlay.querySelector('#saveStoryBtn').addEventListener('click', async ()=>{
+    story.title = overlay.querySelector('#editTitle').value.trim() || story.title;
+    story.tags = overlay.querySelector('#editTags').value.split(',').map(s=>s.trim()).filter(Boolean);
+    story.category = overlay.querySelector('#editCategory').value.trim();
+    const bgBox = overlay.querySelector('#editBackground');
+    if(bgBox) story.background = bgBox.value;
+    story.updatedAt = Date.now();
+    await dbPut('stories', story);
     closeModal(overlay);
     showToast('已保存');
-    paintDetail(parentOverlay, book);
+    await paintDetail(parentOverlay, story);
     await refreshShelf();
   });
 }
 
 /* ================= Init ================= */
 (async function init(){
+  // Migration runs before anything reads stories, and never touches `books`.
+  try{
+    const res = await migrateBooksToStories();
+    if(res.migrated) console.info('[meow] migrated ' + res.migrated + ' books to stories');
+  }catch(err){
+    console.error('[meow] migration failed', err);
+    showToast('旧数据迁移失败,原始数据仍然保留');
+  }
   initTheme();
   initTabs();
+  initShelf();
   initFab();
   initSearch();
   initTools();
