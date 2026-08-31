@@ -45,7 +45,7 @@
 | 六 | 滚动 / 翻页严格限制在正文区 | ✅ |
 | 七 | 沉浸式真全屏,不靠漏出的箭头展开 | ✅ |
 | 八 | 背景上调正文位置 / 大小,阅读辅助线 | ✅ 横线 / 虚线 / 方格 |
-| 九 | TTS 多 API 预设,拉取真实模型列表 | ✅ 含重拉 / 测试 / 快捷配置 |
+| 九 | TTS 多 API 预设,拉取真实**版本模型**列表 | ✅ 拉取 / 重拉 / 选择 / 测试 / 设为默认;模型与音色分开 |
 | 十 | 手动选择朗读内容(长按),暂停 / 继续 / 停止 | ✅ |
 | 十一 | 规则识别旁白 / 角色对白 | ✅ |
 | 十二 | 角色声音绑定,与故事解耦 | ✅ |
@@ -126,7 +126,9 @@ Instruction(共同的指令 / 主题 / 系列)
 
 ### `presets`(三种,用 kind 区分)
 ```js
-{ id, kind:'voice',    name, provider, characterId, endpoint, apiKey, voiceId,
+{ id, kind:'voice',    name, provider, characterId, endpoint, apiKey,
+  model,          // 版本模型:speech-02-hd / tts-1-hd / eleven_multilingual_v2
+  voiceId,        // 音色:female-yujie / nova / <ElevenLabs voice_id> —— 和 model 是两回事
   extraParams, promptInjection, bodyTemplate, headersTemplate, audioPath, chunkSize, createdAt }
 { id, kind:'summary',  name, provider, endpoint, apiKey, model, promptTemplate, createdAt }
 { id, kind:'annotate', name, provider, endpoint, apiKey, model, promptTemplate, createdAt }
@@ -242,6 +244,39 @@ grep -c "<\\\\/script>" meow-reader.html   # 应该等于文件里内嵌script�
 - **解析不出来就把原始响应整段显示出来**(`showApiErrorModal()`),用户可以照着调预设。`fetch` 本身抛错会提示大概率是 CORS。
 
 一个坑:**Safari 只允许在用户手势里调用过 `play()` 的 `<audio>` 元素之后再用脚本播放**,而第一次合成要等好几个 await。所以 `startReadAloud()` 一进来就同步 `new Audio()` 并调一次 `play()` 把它"解锁",真正的异步流程放在里面的 async IIFE 里。
+
+### 模型(版本)和音色是两个东西
+
+**这一点最初做错过,现在修好了,以后别再混。**
+
+- **模型 / 版本** = `speech-01` / `speech-02-hd` / `tts-1-hd` / `eleven_multilingual_v2`,存在 `preset.model`
+- **音色 / Voice ID** = `female-yujie` / `nova` / ElevenLabs 的 `voice_id`,存在 `preset.voiceId`
+
+规格 9.2 明确说"TTS 不能写死一个固定模型",所以模型**不能**留在请求体模板里。请求体用 `{{model}}` 占位符引用 `preset.model`,换模型不需要改模板。占位符现在有五个:`{{model}}` `{{text}}` `{{voice}}` `{{prompt}}` `{{apiKey}}`,接口地址里也能用。
+
+模型这条链完整支持规格要求的五个动作:
+
+| 动作 | 实现 |
+|---|---|
+| 拉取模型 | `fetchTtsModelList()`,打接口实际的 `/models` |
+| 重新拉取 | 同一个按钮再点一次 |
+| 选择模型 | 下拉框选中写回文本框(文本框始终保留,私有模型能手填) |
+| 测试模型 | `testTtsModel()` 用当前设置真的合成一句话并播放 |
+| 设置默认模型 | 保存下来的 `preset.model` 就是这个预设的默认模型 |
+
+`apiBaseFor()` 负责从各种形状的接口地址推出 `/models` 的位置:
+
+| 接口地址 | 推出来的 models 地址 |
+|---|---|
+| `…/v1/audio/speech` | `…/v1/models` |
+| `…/v1/text-to-speech/<id>` | `…/v1/models` |
+| `…/v1/chat/completions` | `…/v1/models` |
+| `…/v1/t2a_v2?GroupId=x` | `…/v1/models` |
+| `…/deployments/x/chat/completions`(没有 /vN) | `…/deployments/x/models` |
+
+没有 `/vN` 的自建网关走"整段剥掉已知操作后缀"这条分支——只简单地砍掉最后一段路径的话,`/chat/completions` 会变成 `/chat/models`。这个分支改过一次才对,动它记得回归上面这张表。
+
+MiniMax 没有公开的模型列表接口,所以内置了一份常见版本的候选,并在界面上标明"服务更新后可能有新的,直接手填即可"——不要把它当成权威列表。
 
 ### 快捷配置与拉取列表
 

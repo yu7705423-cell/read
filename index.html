@@ -1666,7 +1666,7 @@ async function refreshVoicePresets(){
     return `
       <div class="entry-item" data-voice="${p.id}">
         <div class="t">${escapeHtml(p.name)}</div>
-        <div class="m">${ch ? escapeHtml(ch.name) + ' · ' : ''}${escapeHtml(p.endpoint||'未填写接口')}</div>
+        <div class="m">${ch ? escapeHtml(ch.name) + ' · ' : ''}${p.model ? escapeHtml(p.model) + ' · ' : ''}${escapeHtml(p.endpoint||'未填写接口')}</div>
       </div>
     `;
   }).join('');
@@ -1711,6 +1711,16 @@ async function openVoicePresetEditor(preset){
       <input type="text" id="vpEndpoint" value="${escapeAttr(preset?.endpoint||'')}" placeholder="https://...">
       <label class="field-label">API Key</label>
       <input type="text" id="vpApiKey" value="${escapeAttr(preset?.apiKey||'')}" placeholder="填你自己的密钥">
+
+      <label class="field-label">模型 / 版本</label>
+      <input type="text" id="vpModel" value="${escapeAttr(preset?.model||'')}" placeholder="例如: speech-02-hd / tts-1-hd">
+      <div class="btn-row">
+        <button class="btn sm" id="vpFetchModels">拉取模型列表</button>
+        <button class="btn sm" id="vpTestModel">测试模型</button>
+      </div>
+      <select id="vpModelPick" style="display:none; margin-top:8px;"></select>
+      <div class="hint-text" id="vpModelNote">这里填的是**版本模型**(speech-01 / speech-02-hd 这种),不是音色。请求体模板里用 <b>{{model}}</b> 引用它,所以换模型不用改模板。保存时选中的就是这个预设的默认模型。</div>
+
       <label class="field-label">音色 / Voice ID</label>
       <input type="text" id="vpVoiceId" value="${escapeAttr(preset?.voiceId||'')}" placeholder="接口要求的音色标识">
       <div class="btn-row" style="margin-top:8px;">
@@ -1725,7 +1735,7 @@ async function openVoicePresetEditor(preset){
 
       <label class="field-label">请求体模板(可选,JSON)</label>
       <textarea id="vpBody" style="min-height:90px;" placeholder='{"model":"speech-01","text":"{{text}}","voice_id":"{{voice}}"}'>${escapeHtml(preset?.bodyTemplate||'')}</textarea>
-      <div class="hint-text">不同语音接口的字段名都不一样,可以在这里自己写请求体。可用占位符:<b>{{text}}</b> 正文、<b>{{voice}}</b> 音色ID、<b>{{prompt}}</b> 朗读提示词、<b>{{apiKey}}</b> 密钥。留空则用默认结构 <code>{text, voice_id, prompt}</code> 加上面的额外参数。</div>
+      <div class="hint-text">不同语音接口的字段名都不一样,可以在这里自己写请求体。可用占位符:<b>{{model}}</b> 模型版本、<b>{{text}}</b> 正文、<b>{{voice}}</b> 音色ID、<b>{{prompt}}</b> 朗读提示词、<b>{{apiKey}}</b> 密钥。留空则用默认结构 <code>{model, text, voice_id, prompt}</code> 加上面的额外参数。</div>
 
       <label class="field-label">自定义请求头(可选,JSON)</label>
       <textarea id="vpHeaders" style="min-height:60px;" placeholder='{"Authorization":"Bearer {{apiKey}}"}'>${escapeHtml(preset?.headersTemplate||'')}</textarea>
@@ -1770,11 +1780,75 @@ async function openVoicePresetEditor(preset){
       q('#vpHeaders').value = pv.headersTemplate || '';
       q('#vpBody').value = pv.bodyTemplate || '';
       q('#vpAudioPath').value = pv.audioPath || '';
+      q('#vpModel').value = pv.defaultModel || '';
       paintProviderChips();
+      showModelCandidates();
       hideVoicePicker();
       showToast(pv.id === 'custom' ? '已清空模板' : ('已填入 ' + pv.name + ' 模板'));
     });
   });
+
+  /* Model version handling: fetch / re-fetch / pick / test. The provider's own
+     known versions show up straight away so there is something to pick even
+     when the service has no model-list endpoint. */
+  const modelPick = q('#vpModelPick');
+  const modelNote = q('#vpModelNote');
+  const DEFAULT_MODEL_NOTE = modelNote.innerHTML;
+  function fillModelPicker(list, note){
+    const current = q('#vpModel').value.trim();
+    modelPick.innerHTML = `<option value="">选择模型…</option>` +
+      list.map(m=>`<option value="${escapeAttr(m.id)}" ${m.id===current?'selected':''}>${escapeHtml(m.name && m.name!==m.id ? (m.name+' ('+m.id+')') : m.id)}</option>`).join('');
+    modelPick.style.display = '';
+    if(note) modelNote.textContent = note;
+  }
+  function showModelCandidates(){
+    const pv = TTS_PROVIDERS.find(x=>x.id === chosenProvider);
+    if(pv && pv.models && pv.models.length){
+      fillModelPicker(pv.models.map(m=>({id:m, name:m})), pv.modelsNote || '');
+    }else{
+      modelPick.style.display = 'none';
+      modelNote.innerHTML = DEFAULT_MODEL_NOTE;
+    }
+  }
+  modelPick.addEventListener('change', ()=>{ if(modelPick.value) q('#vpModel').value = modelPick.value; });
+  q('#vpFetchModels').addEventListener('click', async ()=>{
+    const btn = q('#vpFetchModels'); btn.disabled = true; const label = btn.textContent; btn.textContent = '拉取中…';
+    try{
+      const list = await fetchTtsModelList({
+        provider: chosenProvider,
+        endpoint: q('#vpEndpoint').value.trim(),
+        apiKey: q('#vpApiKey').value.trim(),
+        headersTemplate: q('#vpHeaders').value.trim()
+      });
+      fillModelPicker(list, list.length + ' 个模型(接口实际返回的),选一个会填进上面的输入框');
+      showToast('拿到 ' + list.length + ' 个模型');
+    }catch(err){ showApiErrorModal('拉取模型列表失败', err); }
+    finally{ btn.disabled = false; btn.textContent = label; }
+  });
+  q('#vpTestModel').addEventListener('click', async ()=>{
+    const btn = q('#vpTestModel'); btn.disabled = true; const label = btn.textContent; btn.textContent = '测试中…';
+    let made = null;
+    try{
+      made = await testTtsModel({
+        provider: chosenProvider,
+        endpoint: q('#vpEndpoint').value.trim(),
+        apiKey: q('#vpApiKey').value.trim(),
+        model: q('#vpModel').value.trim(),
+        voiceId: q('#vpVoiceId').value.trim(),
+        promptInjection: q('#vpPrompt').value,
+        extraParams: q('#vpExtra').value.trim(),
+        bodyTemplate: q('#vpBody').value.trim(),
+        headersTemplate: q('#vpHeaders').value.trim(),
+        audioPath: q('#vpAudioPath').value.trim()
+      });
+      const a = new Audio(made.src);
+      a.play().catch(()=>{});
+      showToast('测试成功,正在播放试听');
+      if(made.revoke) setTimeout(()=>{ try{ URL.revokeObjectURL(made.src); }catch(e){} }, 60000);
+    }catch(err){ showApiErrorModal('测试模型失败', err); }
+    finally{ btn.disabled = false; btn.textContent = label; }
+  });
+  showModelCandidates();
 
   const voicePick = q('#vpVoicePick');
   const voiceNote = q('#vpVoiceNote');
@@ -1821,6 +1895,7 @@ async function openVoicePresetEditor(preset){
       characterId: overlay.querySelector('#vpCharacter').value || '',
       endpoint: overlay.querySelector('#vpEndpoint').value.trim(),
       apiKey: overlay.querySelector('#vpApiKey').value.trim(),
+      model: overlay.querySelector('#vpModel').value.trim(),
       voiceId: overlay.querySelector('#vpVoiceId').value.trim(),
       extraParams: overlay.querySelector('#vpExtra').value.trim(),
       promptInjection: overlay.querySelector('#vpPrompt').value,
@@ -1972,8 +2047,11 @@ const TTS_PROVIDERS = [
     note:'需要在接口地址里把 GroupId 换成你自己的。返回的是十六进制音频,已自动解码。',
     endpoint:'https://api.minimax.chat/v1/t2a_v2?GroupId=你的GroupId',
     headersTemplate:'{"Authorization":"Bearer {{apiKey}}","Content-Type":"application/json"}',
-    bodyTemplate:'{\n  "model": "speech-02-hd",\n  "text": "{{text}}",\n  "stream": false,\n  "voice_setting": { "voice_id": "{{voice}}", "speed": 1, "vol": 1, "pitch": 0 },\n  "audio_setting": { "format": "mp3", "sample_rate": 32000 }\n}',
+    bodyTemplate:'{\n  "model": "{{model}}",\n  "text": "{{text}}",\n  "stream": false,\n  "voice_setting": { "voice_id": "{{voice}}", "speed": 1, "vol": 1, "pitch": 0 },\n  "audio_setting": { "format": "mp3", "sample_rate": 32000 }\n}',
     audioPath:'data.audio',
+    defaultModel:'speech-02-hd',
+    models:['speech-01-turbo','speech-01-240228','speech-02-hd','speech-02-turbo','speech-2.5-hd-preview','speech-2.5-turbo-preview'],
+    modelsNote:'MiniMax 没有公开的模型列表接口,这里是常见的几个版本;服务更新后可能有新的,直接手填即可。',
     voices:[
       {id:'male-qn-qingse', name:'青涩青年音色'},
       {id:'male-qn-jingying', name:'精英青年音色'},
@@ -1994,8 +2072,11 @@ const TTS_PROVIDERS = [
     note:'也适用于任何 OpenAI 兼容网关,把地址换成自己的即可。直接返回音频文件。',
     endpoint:'https://api.openai.com/v1/audio/speech',
     headersTemplate:'{"Authorization":"Bearer {{apiKey}}","Content-Type":"application/json"}',
-    bodyTemplate:'{\n  "model": "tts-1",\n  "input": "{{text}}",\n  "voice": "{{voice}}",\n  "response_format": "mp3"\n}',
+    bodyTemplate:'{\n  "model": "{{model}}",\n  "input": "{{text}}",\n  "voice": "{{voice}}",\n  "response_format": "mp3"\n}',
     audioPath:'',
+    defaultModel:'tts-1',
+    models:['tts-1','tts-1-hd','gpt-4o-mini-tts'],
+    modelsNote:'可以点"拉取模型列表"从 /v1/models 取实际可用的版本(会连非语音模型一起列出来)。',
     voices:[
       {id:'alloy',name:'alloy'},{id:'echo',name:'echo'},{id:'fable',name:'fable'},
       {id:'onyx',name:'onyx'},{id:'nova',name:'nova'},{id:'shimmer',name:'shimmer'}
@@ -2006,8 +2087,10 @@ const TTS_PROVIDERS = [
     note:'音色 ID 直接拼在地址里,可以点"拉取音色"从账号里取。',
     endpoint:'https://api.elevenlabs.io/v1/text-to-speech/{{voice}}',
     headersTemplate:'{"xi-api-key":"{{apiKey}}","Content-Type":"application/json"}',
-    bodyTemplate:'{\n  "text": "{{text}}",\n  "model_id": "eleven_multilingual_v2"\n}',
+    bodyTemplate:'{\n  "text": "{{text}}",\n  "model_id": "{{model}}"\n}',
     audioPath:'',
+    defaultModel:'eleven_multilingual_v2',
+    modelsEndpoint:'https://api.elevenlabs.io/v1/models',
     voicesEndpoint:'https://api.elevenlabs.io/v1/voices',
     voicesPath:'voices', voiceIdKey:'voice_id', voiceNameKey:'name'
   },
@@ -2016,13 +2099,14 @@ const TTS_PROVIDERS = [
     note:'OpenAI 兼容格式,直接返回音频文件。',
     endpoint:'https://api.siliconflow.cn/v1/audio/speech',
     headersTemplate:'{"Authorization":"Bearer {{apiKey}}","Content-Type":"application/json"}',
-    bodyTemplate:'{\n  "model": "FunAudioLLM/CosyVoice2-0.5B",\n  "input": "{{text}}",\n  "voice": "{{voice}}",\n  "response_format": "mp3"\n}',
-    audioPath:''
+    bodyTemplate:'{\n  "model": "{{model}}",\n  "input": "{{text}}",\n  "voice": "{{voice}}",\n  "response_format": "mp3"\n}',
+    audioPath:'',
+    defaultModel:'FunAudioLLM/CosyVoice2-0.5B'
   },
   {
     id:'custom', name:'自定义',
-    note:'清空模板,所有字段自己填。',
-    endpoint:'', headersTemplate:'', bodyTemplate:'', audioPath:''
+    note:'清空模板,所有字段自己填。请求体里用 {{model}} 引用上面选的模型。',
+    endpoint:'', headersTemplate:'', bodyTemplate:'', audioPath:'', defaultModel:''
   }
 ];
 
@@ -2132,7 +2216,10 @@ function buildPresetHeaders(preset){
 }
 
 function buildVoiceBody(preset, text){
-  const vars = { text, voice: preset.voiceId||'', prompt: preset.promptInjection||'', apiKey: preset.apiKey||'' };
+  const vars = {
+    text, voice: preset.voiceId||'', prompt: preset.promptInjection||'',
+    apiKey: preset.apiKey||'', model: preset.model||''
+  };
   if(preset.bodyTemplate){
     const filled = fillJsonTemplate(preset.bodyTemplate, vars);
     try{ JSON.parse(filled); }
@@ -2140,6 +2227,7 @@ function buildVoiceBody(preset, text){
     return filled;
   }
   const body = { text, voice_id: preset.voiceId||'' };
+  if(preset.model) body.model = preset.model;
   if(preset.promptInjection) body.prompt = preset.promptInjection;
   if(preset.extraParams){
     try{ Object.assign(body, JSON.parse(preset.extraParams)); }
@@ -2194,7 +2282,7 @@ function toAudioSrc(val){
    accepts the same placeholders as the body. */
 function resolveEndpoint(preset){
   return fillTemplate(preset.endpoint || '', {
-    voice: preset.voiceId || '', apiKey: preset.apiKey || ''
+    voice: preset.voiceId || '', apiKey: preset.apiKey || '', model: preset.model || ''
   });
 }
 async function synthesizeChunk(preset, text){
@@ -2258,10 +2346,31 @@ function normaliseList(json, path, idKey, nameKey){
   if(!Array.isArray(arr) || !arr.length) return [];
   return arr.map(item=>{
     if(typeof item === 'string') return { id:item, name:item };
-    const id = (idKey && item[idKey]) || item.id || item.voice_id || item.model || item.name || '';
+    const id = (idKey && item[idKey]) || item.id || item.model_id || item.voice_id || item.model || item.name || '';
     const name = (nameKey && item[nameKey]) || item.name || item.display_name || item.title || id;
     return id ? { id:String(id), name:String(name) } : null;
   }).filter(Boolean);
+}
+/* The TTS *model version* (speech-01 / speech-02-hd / tts-1-hd …), which is a
+   different axis from the voice/音色. The spec is explicit that this must not be
+   hardcoded, so it lives in its own preset field and is fed to the request body
+   through the {{model}} placeholder. */
+async function fetchTtsModelList(preset){
+  const provider = TTS_PROVIDERS.find(p=>p.id === preset.provider);
+  const url = (provider && provider.modelsEndpoint) || modelsUrlFor(preset.endpoint);
+  if(!url) throw new ApiError('请先填写接口地址,再拉取模型列表。');
+  const headers = buildPresetHeaders(preset);
+  delete headers['Content-Type'];
+  const json = await fetchJson(fillTemplate(url, {apiKey: preset.apiKey||''}), headers);
+  const list = normaliseList(json, (provider && provider.modelsPath) || 'data', null, null);
+  if(!list.length) throw new ApiError('响应里没找到模型列表\n请求地址: ' + url, JSON.stringify(json).slice(0, 3000));
+  return list.sort((a,b)=>a.id.localeCompare(b.id));
+}
+/* Synthesise a short phrase with the settings as typed — the "测试模型" the
+   spec asks for. Returns a playable src so the user can actually hear it. */
+async function testTtsModel(preset){
+  const { src, revoke } = await synthesizeChunk(preset, '喵喵书阁,语音测试。');
+  return { src, revoke };
 }
 async function fetchVoiceList(preset){
   const provider = TTS_PROVIDERS.find(p=>p.id === preset.provider);
@@ -2277,12 +2386,24 @@ async function fetchVoiceList(preset){
   return list;
 }
 /* OpenAI-compatible services all expose /v1/models next to /v1/chat/completions. */
-function modelsUrlFor(endpoint){
-  const ep = (endpoint||'').trim().replace(/\?.*$/, '');
+/* Cut the endpoint back to its API base so /models can be hung off it. Works
+   for /v1/chat/completions, /v1/audio/speech, /v1/text-to-speech/<id> alike;
+   falls back to dropping the last path segment for gateways with no /vN. */
+function apiBaseFor(endpoint){
+  const ep = (endpoint||'').trim().replace(/[?#].*$/, '').replace(/\/+$/, '');
   if(!ep) return '';
-  if(/\/chat\/completions\/?$/.test(ep)) return ep.replace(/\/chat\/completions\/?$/, '/models');
-  if(/\/v\d+\/?$/.test(ep)) return ep.replace(/\/$/, '') + '/models';
-  return ep.replace(/\/[^/]*$/, '') + '/models';
+  const m = ep.match(/^(.*\/v\d+(?:beta|alpha)?)(?:\/.*)?$/i);
+  if(m) return m[1];
+  // No /vN in the path (self-hosted gateways, Azure-style deployments): drop a
+  // known operation suffix whole, so .../chat/completions gives .../models
+  // rather than .../chat/models.
+  const suffix = ep.match(/^(.*?)\/(?:chat\/completions|audio\/speech|text-to-speech(?:\/[^/]*)?|completions|embeddings)$/i);
+  if(suffix) return suffix[1];
+  return ep.replace(/\/[^/]*$/, '');
+}
+function modelsUrlFor(endpoint){
+  const base = apiBaseFor(endpoint);
+  return base ? base + '/models' : '';
 }
 async function fetchModelList(preset){
   const url = modelsUrlFor(preset.endpoint);
