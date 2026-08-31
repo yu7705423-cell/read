@@ -134,6 +134,7 @@ Instruction(共同的指令 / 主题 / 系列)
   voiceId,        // 音色:female-yujie / nova / <ElevenLabs voice_id> —— 和 model 是两回事
   extraParams, promptInjection, bodyTemplate, headersTemplate, audioPath, chunkSize, createdAt }
 { id, kind:'summary',  name, provider, endpoint, apiKey, model, promptTemplate, createdAt }
+{ id, kind:'appearance', name, data:{ 见 APPEARANCE_KEYS }, createdAt }   // 外观预设
 { id, kind:'annotate', name, provider, endpoint, apiKey, model, promptTemplate, createdAt }
 ```
 
@@ -347,6 +348,8 @@ HTML 作品是 `story.kind === 'html'`,正文原样交给独立的 `sandbox="all
 - **自定义CSS 必须走 iframe**。用户写的是 `.mm-p{}`、`body{}` 这种选择器,注进 App 自己的 DOM 会把界面本身改掉。文档里留了一个 `<style id="mmUserCss">`,父页面用 `{mmCustomCss}` 消息改它的 textContent,规则永远出不了那份文档
 - 滑杆改动走 postMessage(`mmTypography` / `mmBackground` / `mmCustomCss`),**不重建 iframe**,否则每拖一下都闪一次
 - iframe 会吞掉指针事件,所以拖动正文是在它上面盖一层透明的 `.bga-grab` 上做的
+
+**外观预设**存在 `presets` store 里(`kind:'appearance'`),内容就是 `APPEARANCE_KEYS` 那一组字段——背景、颜色、位置尺寸、辅助线、CSS、字体、翻页。**语音和 AI 的设置不属于外观,不进预设**,否则换个皮肤会把角色声音一起换掉。应用预设时所有控件和预览一起重画,不能只改数据不改界面。
 
 ### 正文位置 / 宽度 / 高度 / 字号 / 颜色 / 辅助线
 

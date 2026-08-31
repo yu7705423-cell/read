@@ -4511,6 +4511,16 @@ const BG_PRESETS = [
   {name:'墨蓝', value:'#1C2430'},
   {name:'纯黑', value:'#101012'},
 ];
+/* An appearance preset is exactly these fields — everything that decides how a
+   page looks, and nothing about voices or AI, which are not appearance. */
+const APPEARANCE_KEYS = ['background','textColor','fontUrl','customCss','pageEffect','showPageNav',
+  'textOffsetX','textOffsetY','textWidth','textHeight','fontScale','ruleStyle','ruleGap','ruleOffset'];
+function pickAppearance(rs){
+  const out = {};
+  APPEARANCE_KEYS.forEach(k=>{ if(rs[k] !== undefined) out[k] = rs[k]; });
+  return out;
+}
+
 /* The shape "no typography customisation at all". */
 const TYPO_RESET = { textOffsetX:0, textOffsetY:0, fontScale:100, textWidth:100,
                      textHeight:100, textColor:'', ruleStyle:'none', ruleGap:34, ruleOffset:0 };
@@ -4576,6 +4586,7 @@ function openAppearanceStudio(opts){
         <button class="choice-chip" data-tab="rule">辅助线</button>
         <button class="choice-chip" data-tab="ink">背景颜色</button>
         <button class="choice-chip" data-tab="css">自定义CSS</button>
+        <button class="choice-chip" data-tab="preset">预设</button>
       </div>
 
       <div data-panel="pos">
@@ -4610,6 +4621,12 @@ function openAppearanceStudio(opts){
         <div class="hint-text">改一下就能在上面看到效果。CSS 只作用在这份文档里,不会动到 App 本身。</div>
       </div>
 
+      <div data-panel="preset" hidden>
+        <div class="hint-text" style="margin:2px 2px 8px;">把当前这一套外观(背景、颜色、位置尺寸、辅助线、CSS、字体)存下来,以后一键换。</div>
+        <div id="bgaPresetList"></div>
+        <div class="btn-row"><button class="btn sm primary block" id="bgaSavePreset">存为新预设</button></div>
+      </div>
+
       <div class="btn-row bga-actions">
         <button class="btn sm" id="bgaReset">复位</button>
         <button class="btn sm primary" id="bgaDone" style="flex:1;">完成</button>
@@ -4637,17 +4654,21 @@ function openAppearanceStudio(opts){
   }
   const scaleOf = ()=> (stage.clientWidth || 300) / (window.innerWidth || 390);
 
+  /* Fields a preset carries but the studio has no control for (font URL, page
+     effect) ride along here so applying a preset does not silently drop them. */
+  let extraRs = {};
   function rsNow(){
-    return Object.assign({}, story.readerSettings || {}, typo,
-                         { background: bg, customCss: css, pageEffect: 'scroll' });
+    return Object.assign({}, story.readerSettings || {}, extraRs, typo,
+                         { background: bg, customCss: css });
   }
+  function stageRs(){ return Object.assign(rsNow(), { pageEffect:'scroll' }); }
   function buildStage(){
     sizeStage();
     const sample = entry && (entry.content || '').trim()
       ? entry
       : { id:'preview', title:'预览',
           content:'夜里的风从窗缝钻进来,吹得烛火晃了晃。\n\n“你来得比我想的早。”她没有回头,只是把手里的书又翻过一页。\n\n屋外的雨还在下,檐角的水一滴一滴落在青石板上,声音很轻。\n\n她把茶推过来,杯壁上还沾着水汽。“坐吧,雨一时半会儿停不了。”' };
-    frame.srcdoc = buildReaderDoc(sample, { readerSettings: rsNow() }, { top:0, bottom:0 }, null);
+    frame.srcdoc = buildReaderDoc(sample, { readerSettings: stageRs() }, { top:0, bottom:0 }, null);
   }
   /* Live updates go by message: rebuilding the document on every slider tick
      would restart it and flicker. Only CSS that changes the document's own
@@ -4757,6 +4778,54 @@ function openAppearanceStudio(opts){
     cssTimer = setTimeout(()=>{ css = cssBox.value; pushCss(); }, 250);
   });
 
+  /* ---- appearance presets ---- */
+  const presetList = overlay.querySelector('#bgaPresetList');
+  async function paintPresets(){
+    const items = await getPresetsByKind('appearance');
+    presetList.innerHTML = items.length ? items.map(it=>`
+      <div class="story-row" data-preset="${it.id}">
+        <div class="s-body"><div class="t1">${escapeHtml(it.name)}</div></div>
+        <button class="btn sm" data-apply="${it.id}">应用</button>
+        <button class="btn sm ghost" data-del="${it.id}">删</button>
+      </div>
+    `).join('') : `<div class="hint-text">还没有预设。调好之后点下面的按钮存一个。</div>`;
+    presetList.querySelectorAll('[data-apply]').forEach(btn=>{
+      btn.addEventListener('click', async ()=>{
+        const it = items.find(x=>x.id === btn.dataset.apply);
+        if(!it) return;
+        applyAppearance(it.data || {});
+        showToast('已应用「' + it.name + '」');
+      });
+    });
+    presetList.querySelectorAll('[data-del]').forEach(btn=>{
+      btn.addEventListener('click', async ()=>{
+        const it = items.find(x=>x.id === btn.dataset.del);
+        if(!it || !confirm('删除预设「' + it.name + '」?')) return;
+        await dbDelete('presets', it.id);
+        await paintPresets();
+      });
+    });
+  }
+  /* Applying a preset rewrites every control and the preview together, so the
+     studio never shows one thing while holding another. */
+  function applyAppearance(data){
+    Object.keys(TYPO_RESET).forEach(k=>{ if(data[k] !== undefined) typo[k] = data[k]; });
+    if(data.background !== undefined) bg = data.background;
+    if(data.customCss !== undefined){ css = data.customCss; cssBox.value = css; }
+    extraRs = Object.assign({}, extraRs, pickAppearance(data));
+    paintSliders(); paintRules(); repaintInk(); paintBgRow();
+    pushTypo(); pushBg(); pushCss();
+  }
+  overlay.querySelector('#bgaSavePreset').addEventListener('click', async ()=>{
+    const name = (prompt('给这套外观起个名字') || '').trim();
+    if(!name) return;
+    await dbPut('presets', { id: uid(), kind:'appearance', name,
+                             data: pickAppearance(rsNow()), createdAt: Date.now() });
+    await paintPresets();
+    showToast('已存为「' + name + '」');
+  });
+  paintPresets();
+
   overlay.querySelector('#bgaReset').addEventListener('click', ()=>{
     Object.assign(typo, TYPO_RESET);
     paintSliders(); paintRules(); repaintInk(); pushTypo();
@@ -4764,7 +4833,7 @@ function openAppearanceStudio(opts){
   overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
   overlay.querySelector('#bgaDone').addEventListener('click', ()=>{
     css = cssBox.value;
-    onApply({ typo, background: bg, customCss: css });
+    onApply({ typo, background: bg, customCss: css, extra: extraRs });
     closeModal(overlay);
   });
   return overlay;
@@ -4884,10 +4953,13 @@ async function openReaderSettingsSheet(story, onSaved, previewEntry){
       story, entry: previewEntry,
       startTypo: typo, startBg: chosenBg,
       startCss: overlay.querySelector('#customCssInputR').value,
-      onApply: ({ typo: next, background, customCss })=>{
+      onApply: ({ typo: next, background, customCss, extra })=>{
         Object.assign(typo, next);
         chosenBg = background;
         overlay.querySelector('#customCssInputR').value = customCss;
+        // A preset can also carry font URL / page effect, which live out here.
+        if(extra && extra.fontUrl !== undefined) overlay.querySelector('#fontUrlInput').value = extra.fontUrl;
+        if(extra && extra.pageEffect !== undefined){ chosenEffect = extra.pageEffect; paintEffectChips(); }
         paintSwatches();
         syncTypoUi();
         previewTypo();
