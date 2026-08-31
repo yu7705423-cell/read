@@ -272,6 +272,34 @@ body.mm-locked{overflow:hidden;}
 .bg-swatch.selected{border-color:var(--accent); box-shadow:0 0 0 2px var(--accent-soft);}
 .bg-upload-swatch{width:38px; height:38px; border-radius:10px; border:2px dashed var(--border); display:flex; align-items:center; justify-content:center; color:var(--ink-faint); cursor:pointer; flex-shrink:0;}
 
+/* Background adjuster: a phone-shaped stage showing the picture with dummy
+   body text on top, so the text can be dragged into the picture's empty area
+   and the numbers land straight in the reader's real settings. */
+/* Width and height are set in script to the real screen's aspect ratio: a
+   stage of any other shape would place the text somewhere the reader won't. */
+.bga-stage{
+  position:relative; margin:0 auto;
+  border-radius:12px; overflow:hidden; border:1px solid var(--border);
+  background-color:var(--surface-2); background-size:cover; background-position:center;
+  touch-action:none; user-select:none; -webkit-user-select:none;
+}
+.bga-text{
+  position:absolute; inset:0; overflow:hidden; cursor:grab;
+  font-family:"Noto Serif SC",Georgia,serif; line-height:1.95; color:var(--ink);
+}
+.bga-stage.dragging .bga-text{cursor:grabbing;}
+.bga-text p{margin:0 0 1.1em;}
+/* A stage big enough to aim in pushes the buttons past the fold, so they ride
+   along the bottom of the scrolling body instead. */
+.bga-actions{
+  position:sticky; bottom:0; background:var(--bg);
+  padding:8px 0 6px; margin-top:6px; border-top:1px solid var(--border);
+}
+.bga-hint{
+  position:absolute; left:0; right:0; bottom:0; padding:5px 8px; text-align:center;
+  font-size:10.5px; color:#fff; background:rgba(0,0,0,.42); pointer-events:none;
+}
+
 .iframe-preview{
   width:100%; height:60vh; border:1px solid var(--border); border-radius:12px; background:#fff;
 }
@@ -3902,7 +3930,11 @@ function buildReaderDoc(entry, story, insets, restore){
     if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wireManualSelection);
     else wireManualSelection();
 
-    return { applyTypography: applyTypography, setVar: setVar };
+    function applyBackground(bg){
+      document.body.style.background = bg || '';
+    }
+
+    return { applyTypography: applyTypography, applyBackground: applyBackground, setVar: setVar };
   })();
   window.__mm.applyTypography(${JSON.stringify(typo)});
   <\/script>`;
@@ -4165,6 +4197,7 @@ function buildReaderDoc(entry, story, insets, restore){
       if(e.data.mmGoPage !== undefined) goTo(e.data.mmGoPage);
       if(e.data.mmRelayout) layout();
       if(e.data.mmInsets) applyInsets(e.data.mmInsets.top, e.data.mmInsets.bottom);
+      if(e.data.mmBackground !== undefined) window.__mm.applyBackground(e.data.mmBackground);
       if(e.data.mmTypography){
         window.__mm.applyTypography(e.data.mmTypography);
         layout();   // font size / margins changed, so re-paginate
@@ -4205,6 +4238,7 @@ function buildReaderDoc(entry, story, insets, restore){
     window.addEventListener('message', function(e){
       if(!e.data) return;
       if(e.data.mmInsets) applyInsets(e.data.mmInsets.top, e.data.mmInsets.bottom);
+      if(e.data.mmBackground !== undefined) window.__mm.applyBackground(e.data.mmBackground);
       if(e.data.mmTypography) window.__mm.applyTypography(e.data.mmTypography);
     });
     document.addEventListener('click', function(e){
@@ -4402,6 +4436,119 @@ function openCopySheet(story, entry){
   });
 }
 
+/* ================= Background adjuster =================
+   Opens right after a background picture is picked: the picture fills a
+   phone-shaped stage and dummy body text sits on top, positioned with the
+   same padding maths the reader document uses, so dragging the text into the
+   picture's empty area produces offsets that mean the same thing there.
+   The stage is narrower than a real screen, so every px is drawn scaled and
+   the values handed back are unscaled — real reader pixels. */
+function openBgAdjuster(bg, startTypo, onApply){
+  const typo = Object.assign({}, startTypo);
+  const LIMITS = { textOffsetX:80, textOffsetY:120 };
+  const overlay = openModal(`
+    <div class="modal-header"><h2>调整正文位置</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+    <div class="modal-body">
+      <div class="bga-stage" id="bgaStage">
+        <div class="bga-text" id="bgaText">
+          <p>夜里的风从窗缝钻进来,吹得烛火晃了晃。</p>
+          <p>“你来得比我想的早。”她没有回头,只是把手里的书又翻过一页。</p>
+          <p>屋外的雨还在下,檐角的水一滴一滴落在青石板上,声音很轻。</p>
+        </div>
+        <div class="bga-hint">按住文字拖动,或用下面的滑杆微调</div>
+      </div>
+      <label class="slider-row"><span>上下</span><input type="range" id="bgaY" min="-120" max="120" step="2" value="${typo.textOffsetY|0}"><b id="bgaYVal">${typo.textOffsetY|0}</b></label>
+      <label class="slider-row"><span>左右</span><input type="range" id="bgaX" min="-80" max="80" step="2" value="${typo.textOffsetX|0}"><b id="bgaXVal">${typo.textOffsetX|0}</b></label>
+      <label class="slider-row"><span>字号</span><input type="range" id="bgaScale" min="70" max="180" step="2" value="${typo.fontScale||100}"><b id="bgaScaleVal">${typo.fontScale||100}%</b></label>
+      <div class="hint-text" style="margin-top:6px;">这里只调正文的位置和字号,翻页样式、辅助线这些还在阅读设置里。</div>
+      <div class="btn-row bga-actions">
+        <button class="btn sm" id="bgaReset">复位</button>
+        <button class="btn sm primary" id="bgaDone" style="flex:1;">完成</button>
+      </div>
+    </div>
+  `);
+
+  const stage = overlay.querySelector('#bgaStage');
+  const textEl = overlay.querySelector('#bgaText');
+  if(bg) stage.style.background = bg;
+
+  /* Same numbers as buildReaderDoc: 36px of top chrome padding and 22px side
+     margins, drawn at the stage's scale. */
+  const BASE_PAD_TOP = 36, BASE_PAD_SIDE = 22, BASE_FONT = 16.5;
+  const scaleOf = ()=> (stage.clientWidth || 300) / (window.innerWidth || 390);
+  /* Fit the screen's shape into the sheet: as tall as allowed, and narrower
+     instead of squatter when that would overflow, so the scale stays uniform
+     in both directions and a drag means the same thing here as in the reader. */
+  function sizeStage(){
+    const availW = (stage.parentElement || stage).clientWidth || 300;
+    const ar = (window.innerWidth || 390) / (window.innerHeight || 780);
+    // A phone is far taller than it is wide, so height is the generous budget
+    // here — a stage sized to fit without scrolling ends up too small to aim in.
+    let h = Math.min((window.innerHeight || 780) * 0.72, availW / ar);
+    stage.style.width = Math.round(h * ar) + 'px';
+    stage.style.height = Math.round(h) + 'px';
+  }
+  function paintStage(){
+    sizeStage();
+    const s = scaleOf();
+    textEl.style.paddingTop = Math.max(0, (BASE_PAD_TOP + typo.textOffsetY) * s) + 'px';
+    textEl.style.paddingLeft = Math.max(8, BASE_PAD_SIDE + typo.textOffsetX) * s + 'px';
+    textEl.style.paddingRight = Math.max(8, BASE_PAD_SIDE - typo.textOffsetX) * s + 'px';
+    textEl.style.fontSize = (BASE_FONT * ((typo.fontScale || 100) / 100) * s) + 'px';
+  }
+  const sliders = [
+    ['#bgaY','#bgaYVal','textOffsetY', v=>String(v)],
+    ['#bgaX','#bgaXVal','textOffsetX', v=>String(v)],
+    ['#bgaScale','#bgaScaleVal','fontScale', v=>v+'%']
+  ];
+  function paintSliders(){
+    sliders.forEach(([sel,valSel,key,fmt])=>{
+      overlay.querySelector(sel).value = typo[key];
+      overlay.querySelector(valSel).textContent = fmt(typo[key]);
+    });
+  }
+  sliders.forEach(([sel,valSel,key,fmt])=>{
+    overlay.querySelector(sel).addEventListener('input', (e)=>{
+      typo[key] = parseInt(e.target.value, 10);
+      overlay.querySelector(valSel).textContent = fmt(typo[key]);
+      paintStage();
+    });
+  });
+
+  /* Dragging moves the text by real reader pixels, so the gesture distance is
+     divided back out by the stage scale. */
+  let dragging = null;
+  textEl.addEventListener('pointerdown', (e)=>{
+    dragging = { x:e.clientX, y:e.clientY, ox:typo.textOffsetX, oy:typo.textOffsetY, s:scaleOf() };
+    textEl.setPointerCapture(e.pointerId);
+    stage.classList.add('dragging');
+  });
+  textEl.addEventListener('pointermove', (e)=>{
+    if(!dragging) return;
+    e.preventDefault();
+    const clamp = (v,lim)=> Math.max(-lim, Math.min(lim, Math.round(v/2)*2));
+    typo.textOffsetX = clamp(dragging.ox + (e.clientX - dragging.x) / dragging.s, LIMITS.textOffsetX);
+    typo.textOffsetY = clamp(dragging.oy + (e.clientY - dragging.y) / dragging.s, LIMITS.textOffsetY);
+    paintStage(); paintSliders();
+  });
+  const endDrag = ()=>{ dragging = null; stage.classList.remove('dragging'); };
+  textEl.addEventListener('pointerup', endDrag);
+  textEl.addEventListener('pointercancel', endDrag);
+
+  overlay.querySelector('#bgaReset').addEventListener('click', ()=>{
+    typo.textOffsetX = 0; typo.textOffsetY = 0; typo.fontScale = 100;
+    paintSliders(); paintStage();
+  });
+  overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
+  overlay.querySelector('#bgaDone').addEventListener('click', ()=>{
+    onApply(typo);
+    closeModal(overlay);
+  });
+  window.addEventListener('resize', paintStage);
+  requestAnimationFrame(paintStage);   // needs a laid-out stage to measure
+  return overlay;
+}
+
 /* ================= Reader appearance settings ================= */
 async function openReaderSettingsSheet(story, onSaved){
   const rs = story.readerSettings || (story.readerSettings = { background:'', pageEffect:'scroll', customCss:'', fontUrl:'' });
@@ -4437,10 +4584,8 @@ async function openReaderSettingsSheet(story, onSaved){
       <input type="text" id="fontUrlInput" placeholder="https://fonts.googleapis.com/css2?family=..." value="${escapeAttr(rs.fontUrl||'')}">
       ${isHtmlStory(story) ? '' : `
         <div class="section-title" style="margin-top:16px;">正文位置与字号</div>
-        <div class="hint-text" style="margin:-4px 2px 6px;">上传背景图之后,用这几个滑杆把正文挪到背景的空白处,拖动时下面实时预览。</div>
-        <div id="typoPreviewBox" style="background:var(--surface-2); border:1px solid var(--border); border-radius:8px; padding:12px; margin:8px 0; max-height:200px; overflow-y:auto; font-size:13px; line-height:1.6; color:var(--ink);">
-          预览: 这是阅读文本的位置演示。拖动下面的滑杆改变位置和字号,这里会实时更新显示效果。
-        </div>
+        <div class="hint-text" style="margin:-4px 2px 6px;">想对着背景图挪正文,点下面这个按钮,在图上直接拖。</div>
+        <div class="btn-row"><button class="btn sm primary block" id="openBgAdjustBtn">在背景上调整正文位置</button></div>
         <label class="slider-row"><span>上下</span><input type="range" id="tOffsetY" min="-120" max="120" step="2" value="${rs.textOffsetY|0}"><b id="tOffsetYVal">${rs.textOffsetY|0}</b></label>
         <label class="slider-row"><span>左右</span><input type="range" id="tOffsetX" min="-80" max="80" step="2" value="${rs.textOffsetX|0}"><b id="tOffsetXVal">${rs.textOffsetX|0}</b></label>
         <label class="slider-row"><span>字号</span><input type="range" id="tFontScale" min="70" max="180" step="2" value="${rs.fontScale||100}"><b id="tFontScaleVal">${rs.fontScale||100}%</b></label>
@@ -4510,28 +4655,17 @@ async function openReaderSettingsSheet(story, onSaved){
   function previewTypo(){
     const ifr = document.querySelector('#readerIframe');
     if(ifr && ifr.contentWindow) ifr.contentWindow.postMessage({ mmTypography: typo }, '*');
-    const previewBox = overlay.querySelector('#typoPreviewBox');
-    if(previewBox){
-      previewBox.style.transform = `translate(${typo.textOffsetX}px, ${typo.textOffsetY}px)`;
-      previewBox.style.fontSize = (typo.fontScale / 100) + 'em';
-      if(typo.ruleStyle !== 'none'){
-        let bg = '';
-        if(typo.ruleStyle === 'solid'){
-          bg = `repeating-linear-gradient(to bottom, transparent 0, transparent ${typo.ruleGap-1}px, currentColor 0, currentColor 1px)`;
-        } else if(typo.ruleStyle === 'dashed'){
-          bg = `repeating-linear-gradient(to bottom, transparent 0, transparent ${typo.ruleGap-2}px, currentColor ${typo.ruleGap-1}px, currentColor ${typo.ruleGap}px)`;
-        } else if(typo.ruleStyle === 'grid'){
-          bg = `linear-gradient(0deg, transparent calc(${typo.ruleGap}px - 1px), currentColor calc(${typo.ruleGap}px - 1px)), linear-gradient(90deg, transparent calc(50% - 0.5px), currentColor calc(50% - 0.5px), currentColor calc(50% + 0.5px), transparent calc(50% + 0.5px))`;
-        }
-        previewBox.style.backgroundImage = bg;
-        previewBox.style.backgroundRepeat = 'repeat';
-        previewBox.style.backgroundPosition = `0 ${typo.ruleOffset}px`;
-        previewBox.style.opacity = '0.9';
-      } else {
-        previewBox.style.backgroundImage = 'none';
-        previewBox.style.opacity = '1';
-      }
-    }
+  }
+  /* Assigned below when the story has typography controls at all. */
+  let syncTypoUi = ()=>{};
+  function openTypoAdjuster(){
+    openBgAdjuster(chosenBg, typo, (next)=>{
+      typo.textOffsetX = next.textOffsetX;
+      typo.textOffsetY = next.textOffsetY;
+      typo.fontScale = next.fontScale;
+      syncTypoUi();
+      previewTypo();
+    });
   }
   if(!isHtmlStory(story)){
     const sliders = [
@@ -4545,8 +4679,6 @@ async function openReaderSettingsSheet(story, onSaved){
       overlay.querySelector(sel).value = typo[key];
       overlay.querySelector(valSel).textContent = fmt(typo[key]);
     });
-    paintSliders();
-    previewTypo();
     sliders.forEach(([sel,valSel,key,fmt])=>{
       overlay.querySelector(sel).addEventListener('input', (e)=>{
         typo[key] = parseInt(e.target.value, 10);
@@ -4563,6 +4695,8 @@ async function openReaderSettingsSheet(story, onSaved){
       b.addEventListener('click', ()=>{ typo.ruleStyle = b.dataset.rule; paintRuleChips(); previewTypo(); });
     });
     paintRuleChips();
+    syncTypoUi = ()=>{ paintSliders(); paintRuleChips(); };
+    overlay.querySelector('#openBgAdjustBtn').addEventListener('click', openTypoAdjuster);
     overlay.querySelector('#resetTypoBtn').addEventListener('click', ()=>{
       typo = Object.assign({}, TYPO_DEFAULTS);
       paintSliders(); paintRuleChips(); previewTypo();
@@ -4577,19 +4711,29 @@ async function openReaderSettingsSheet(story, onSaved){
       <div class="bg-swatch ${chosenBg===p.value?'selected':''}" data-bg="${escapeAttr(p.value)}" style="background:${p.value||'var(--surface-2)'};" title="${p.name}"></div>
     `).join('') + `<label class="bg-upload-swatch" id="bgUploadSwatch" for="bgUploadInput">+<input type="file" accept="image/*" id="bgUploadInput" style="display:none;"></label>`;
     swatchRow.querySelectorAll('[data-bg]').forEach(sw=>{
-      sw.addEventListener('click', ()=>{ chosenBg = sw.dataset.bg; paintSwatches(); });
+      sw.addEventListener('click', ()=>{ chosenBg = sw.dataset.bg; paintSwatches(); previewBg(); });
     });
     swatchRow.querySelector('#bgUploadInput').addEventListener('change', (e)=>{
       const f = e.target.files[0]; if(!f) return;
       const rd = new FileReader();
-      rd.onload = ()=>{ chosenBg = `url(${rd.result}) center/cover no-repeat`; paintSwatches(); previewBg(); };
+      rd.onload = ()=>{
+        chosenBg = `url(${rd.result}) center/cover no-repeat`;
+        paintSwatches(); previewBg();
+        // The picture is only half the job: open the adjuster so the text can
+        // be dragged onto its empty area straight away.
+        if(!isHtmlStory(story)) openTypoAdjuster();
+      };
       rd.readAsDataURL(f);
     });
   }
+  /* The reader document is sandboxed into an opaque origin, so its background
+     can only be reached by message, never through contentWindow.document. */
   function previewBg(){
     const ifr = document.querySelector('#readerIframe');
-    if(ifr && ifr.contentWindow && ifr.contentWindow.document){
-      ifr.contentWindow.document.body.style.background = chosenBg || 'var(--surface-2)';
+    // Clearing the picture falls back to the theme colour, the same choice
+    // buildReaderDoc makes, rather than leaving the body transparent.
+    if(ifr && ifr.contentWindow){
+      ifr.contentWindow.postMessage({ mmBackground: chosenBg || currentThemeVars().bg }, '*');
     }
   }
   paintSwatches();

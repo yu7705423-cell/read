@@ -344,6 +344,15 @@ HTML 作品是 `story.kind === 'html'`,正文原样交给独立的 `sandbox="all
 - 横线用 `repeating-linear-gradient`;虚线和方格用平铺的内联 SVG——CSS 渐变表达不了"每 N 像素画一条虚线"
 - 实时预览靠 postMessage 改 CSS 变量,不重建 iframe;分页模式改完会重跑分页
 
+**背景调整器(`openBgAdjuster`)**:选完背景图会**自己弹出来**,不用先保存再看效果。一个手机形状的舞台放大图,示例正文压在上面,可以直接**拖文字**,也可以用滑杆。
+
+- 舞台的宽高比按 `innerWidth/innerHeight` 算出来,**不能随便定个比例**:比例不对,`cover` 裁出来的构图就和真机不一样,照着调出来的位置到了阅读页就是错的
+- 手机屏又窄又高,舞台高度给到 72vh 才够大到能瞄准,按钮因此会被挤到屏幕外,所以按钮行用 `position:sticky; bottom:0`
+- 舞台里的 padding / 字号都按 `舞台宽 / 屏幕宽` 缩放画,交回去的数值再除回来,**存的始终是阅读页的真实像素**
+- 正文颜色就用主题的 `--ink`,不额外加描边:深色图配浅色主题本来就看不清,预览要如实告诉用户这件事
+
+**背景实时预览只能用 postMessage**。阅读器 iframe 是 `sandbox="allow-scripts"`(没有 `allow-same-origin`),处在 opaque origin,父页面碰 `iframe.contentWindow.document` 会直接抛 DOMException——所以背景改动走 `{mmBackground}` 消息,由文档内的 `applyBackground` 落地。清空背景时父页面要发主题色,别发空串,否则 body 会变透明。
+
 ### 朗读引擎
 
 引擎只接收一串 `{type, character, text}` 片段和一个"这段用哪个声音"的解析器(`buildVoicePlan`),**自己完全不认识阅读器**。换 TTS 服务或加新服务不需要动引擎。
