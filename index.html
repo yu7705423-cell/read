@@ -4588,7 +4588,7 @@ async function openReaderSettingsSheet(story, onSaved){
   }
   function previewBg(){
     const ifr = document.querySelector('#readerIframe');
-    if(ifr && ifr.contentWindow && ifr.contentWindow.style){
+    if(ifr && ifr.contentWindow && ifr.contentWindow.document){
       ifr.contentWindow.document.body.style.background = chosenBg || 'var(--surface-2)';
     }
   }
