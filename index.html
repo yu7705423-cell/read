@@ -4259,19 +4259,31 @@ function buildReaderDoc(entry, story, insets, restore){
       document.documentElement.style.setProperty('--mm-pad-top', top + 'px');
       document.documentElement.style.setProperty('--mm-pad-bottom', bottom + 'px');
     }
+    /* Only count as restored once it actually happened. A srcdoc document can
+       fire load before layout settles, when maxScroll() is still 0; marking it
+       restored there burned the fonts.ready retry and the position was lost
+       for good. Keep trying for a short while instead. */
     function restore(){
       if(restored || !RESTORE) return;
-      restored = true;
       var max = maxScroll();
-      if(max > 0) window.scrollTo(0, (RESTORE.ratio || 0) * max);
+      if(max <= 0) return;
+      restored = true;
+      window.scrollTo(0, (RESTORE.ratio || 0) * max);
+    }
+    var restoreTries = 0;
+    function restoreSoon(){
+      if(restored || !RESTORE || restoreTries++ > 60) return;
+      restore();
+      if(!restored) requestAnimationFrame(restoreSoon);
     }
     window.addEventListener('scroll', function(){
       // Throttled: the parent writes this to IndexedDB.
       if(tick) return;
       tick = setTimeout(function(){ tick = null; report(); }, 400);
     }, {passive:true});
-    window.addEventListener('load', function(){ restore(); report(); });
-    if(document.fonts && document.fonts.ready) document.fonts.ready.then(restore);
+    window.addEventListener('load', function(){ restoreSoon(); report(); });
+    if(document.fonts && document.fonts.ready) document.fonts.ready.then(restoreSoon);
+    restoreSoon();
     window.addEventListener('message', function(e){
       if(!e.data) return;
       if(e.data.mmInsets) applyInsets(e.data.mmInsets.top, e.data.mmInsets.bottom);
@@ -4949,6 +4961,10 @@ function openReaderPage(parentOverlay, story, entryId){
   const pagenav = reader.querySelector('#readerPagenav');
   let immersive = false;
   let wantNav = false;
+  /* Back has two meanings: leave the editor, or leave the reader. Without this
+     the editor's only visible exit closed the whole reader and dropped you on
+     the story page, losing the place you were reading. */
+  let editing = false;
 
   /* Immersive means the whole screen is the page: every control is hidden and
      none of them can be tapped. Coming back out is a deliberate action on the
@@ -5039,10 +5055,24 @@ function openReaderPage(parentOverlay, story, entryId){
   function onKey(e){
     if(e.key === 'Escape'){
       if(immersive){ setImmersive(false); e.preventDefault(); }
+      else if(editing){ leaveEditor(); e.preventDefault(); }
       else closeReader();
     }
   }
   window.addEventListener('keydown', onKey);
+
+  /* Leaving the editor goes back to the reading view, which restores the saved
+     position. Unsaved text is worth a confirm — it is the user's own writing. */
+  function leaveEditor(){
+    const box = reader.querySelector('#rContent');
+    const titleBox = reader.querySelector('#rTitle');
+    const promptBox = reader.querySelector('#rPrompt');
+    const dirty = (box && box.value !== (entry.content || ''))
+      || (titleBox && titleBox.value.trim() !== entry.title)
+      || (promptBox && promptBox.value !== (entry.prompt || ''));
+    if(dirty && !confirm('还没保存,要放弃这次修改吗?')) return;
+    paintRendered();
+  }
 
   async function closeReader(){
     window.removeEventListener('message', onMessage);
@@ -5061,9 +5091,12 @@ function openReaderPage(parentOverlay, story, entryId){
     setTimeout(()=>reader.remove(), 260);
     if(parentOverlay && document.body.contains(parentOverlay)) await paintDetail(parentOverlay, story);
   }
-  reader.querySelector('[data-r-back]').addEventListener('click', closeReader);
+  reader.querySelector('[data-r-back]').addEventListener('click', ()=>{
+    if(editing) leaveEditor(); else closeReader();
+  });
 
   function paintRendered(){
+    editing = false;
     setImmersive(false);
     const body = reader.querySelector('#readerBody');
     const rs = story.readerSettings || {};
@@ -5085,6 +5118,7 @@ function openReaderPage(parentOverlay, story, entryId){
   }
 
   function paintEdit(){
+    editing = true;
     setImmersive(false);
     const body = reader.querySelector('#readerBody');
     pagenav.style.display = 'none';
