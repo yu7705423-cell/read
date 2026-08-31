@@ -4053,7 +4053,7 @@ function buildReaderDoc(entry, story, insets, restore){
     html,body{height:100%; overscroll-behavior:none;}
     body{
       margin:0; background:${bg}; color:var(--mm-ink);
-      font-family:${fontFamily ? `"${fontFamily}",` : ''}"Noto Serif SC",Georgia,serif;
+      font-family:var(--mm-font, "Noto Serif SC"),"Noto Serif SC",Georgia,serif;
       font-size:calc(16.5px * var(--mm-font-scale)); line-height:1.95; word-break:break-word;
       -webkit-tap-highlight-color:transparent;
     }
@@ -4075,6 +4075,7 @@ function buildReaderDoc(entry, story, insets, restore){
       --mm-width:${(typo.textWidth || 100) / 100};
       --mm-height:${typo.textHeight || 100}vh;
       --mm-ink:${typo.textColor || t.ink};
+      ${fontFamily ? `--mm-font:"${fontFamily}";` : ''}
     }
     /* Nudging the text over a background picture is padding, not transform:
        a transform would move the text off the box the pagination measured.
@@ -4220,6 +4221,45 @@ function buildReaderDoc(entry, story, insets, restore){
     }
     if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wireManualSelection);
     else wireManualSelection();
+
+    /* Guessing the family out of the URL only works for Google Fonts' ?family=
+       form; any other host (a self-hosted css, another foundry) parsed to an
+       empty name and the text silently kept the default. The names are readable
+       from document.fonts even when the stylesheet itself is cross-origin and
+       its cssRules are walled off, so ask the browser instead of the URL.
+       Loading is then verified, because a sandboxed document is an opaque
+       origin: the font file is fetched with Origin: null and a server without
+       CORS headers refuses it — that has to be reported, not swallowed. */
+    function adoptLinkedFont(){
+      if(!document.fonts || !document.fonts.forEach) return;
+      var fams = [];
+      document.fonts.forEach(function(f){
+        if(f.family && fams.indexOf(f.family) < 0) fams.push(f.family);
+      });
+      if(!fams.length) return;
+      var quoted = fams.map(function(n){ return '"' + String(n).split('"').join('') + '"'; }).join(', ');
+      setVar('--mm-font', quoted);
+      var probes = fams.map(function(n){
+        return document.fonts.load('16px "' + n + '"').catch(function(){ return []; });
+      });
+      Promise.all(probes).then(function(){
+        var ok = fams.some(function(n){ return document.fonts.check('16px "' + n + '"'); });
+        try{ parent.postMessage({ mmFontStatus:{ family: fams[0], ok: ok } }, '*'); }catch(e){}
+      });
+    }
+    /* fonts.ready can resolve before a linked stylesheet has even been parsed,
+       and at that moment document.fonts is still empty — so watch for the
+       faces actually showing up rather than trusting one event. */
+    function adoptSoon(tries){
+      tries = tries || 0;
+      if(document.fonts && document.fonts.size > 0){ adoptLinkedFont(); return; }
+      if(tries > 40) return;
+      setTimeout(function(){ adoptSoon(tries + 1); }, 100);
+    }
+    var mmLink = document.querySelector('link[rel="stylesheet"]');
+    if(mmLink) mmLink.addEventListener('load', function(){ adoptSoon(0); });
+    if(document.fonts && document.fonts.ready) document.fonts.ready.then(function(){ adoptSoon(0); });
+    adoptSoon(0);
 
     function applyBackground(bg){
       document.body.style.background = bg || '';
@@ -4814,10 +4854,11 @@ function bindInkRow(scope, id, getCurrent, onPick){
    stage IS the reader, including custom CSS, which must never be injected into
    the app's own DOM where it would restyle the UI itself. */
 function openAppearanceStudio(opts){
-  const { story, entry, startTypo, startBg, startCss, startEffect, onApply } = opts;
+  const { story, entry, startTypo, startBg, startCss, startEffect, startFontUrl, onApply } = opts;
   const typo = Object.assign({}, startTypo);
   let bg = startBg || '';
   let css = startCss || '';
+  let fontUrl = startFontUrl || '';
 
   const overlay = openModal(`
     <div class="modal-header"><h2>外观调整</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
@@ -4830,7 +4871,7 @@ function openAppearanceStudio(opts){
       <div class="chip-row" id="bgaTabs" style="margin-top:10px;">
         <button class="choice-chip selected" data-tab="pos">位置尺寸</button>
         <button class="choice-chip" data-tab="rule">辅助线</button>
-        <button class="choice-chip" data-tab="ink">背景颜色</button>
+        <button class="choice-chip" data-tab="ink">背景字体</button>
         <button class="choice-chip" data-tab="css">自定义CSS</button>
         <button class="choice-chip" data-tab="preset">预设</button>
       </div>
@@ -4866,6 +4907,9 @@ function openAppearanceStudio(opts){
         <label class="field-label">背景</label>
         <div class="bg-swatch-row" id="bgaBgRow"></div>
         ${inkRowHtml('bgaInk', typo.textColor || '', '正文颜色')}
+        <label class="field-label" style="margin-top:12px;">字体链接</label>
+        <div class="hint-text" id="bgaFontStatus" style="margin:-2px 2px 6px;"></div>
+        <input type="text" id="bgaFontUrl" placeholder="https://fonts.googleapis.com/css2?family=..." value="${escapeAttr(startFontUrl || '')}">
       </div>
 
       <div data-panel="css" hidden>
@@ -4910,6 +4954,7 @@ function openAppearanceStudio(opts){
      effect) ride along here so applying a preset does not silently drop them. */
   let extraRs = {};
   function rsNow(){
+    extraRs.fontUrl = fontUrl;
     return Object.assign({}, story.readerSettings || {}, extraRs, typo,
                          { background: bg, customCss: css });
   }
@@ -4944,6 +4989,45 @@ function openAppearanceStudio(opts){
 
   /* Rebuilding is only for changes the document is generated from — the page
      effect. Everything else goes by message so the preview never flickers. */
+  const fontStatus = overlay.querySelector('#bgaFontStatus');
+  function setFontStatus(text, bad){
+    fontStatus.textContent = text;
+    fontStatus.style.color = bad ? 'var(--danger)' : '';
+  }
+  let lastFontVerdict = '';
+  function onFontMsg(e){
+    if(!e.data || !e.data.mmFontStatus) return;
+    const { family, ok } = e.data.mmFontStatus;
+    // The document may report more than once as faces arrive; only react to a
+    // verdict that actually changed, or the toast fires repeatedly.
+    const verdict = family + '|' + ok;
+    if(verdict === lastFontVerdict) return;
+    lastFontVerdict = verdict;
+    if(ok){
+      setFontStatus('已用上「' + family + '」', false);
+    } else {
+      setFontStatus('「' + family + '」没能加载。多半是那个网站不允许跨站取字体(缺 CORS 头);' +
+                    '换成 Google Fonts 之类的链接就行。', true);
+      // The status line can sit below the fold, and a silently unchanged font
+      // is exactly the confusion this is meant to end.
+      showToast('字体没能加载:对方服务器不允许跨站取字体');
+    }
+  }
+  window.addEventListener('message', onFontMsg);
+  const stopFontMsg = ()=> window.removeEventListener('message', onFontMsg);
+
+  const fontBox = overlay.querySelector('#bgaFontUrl');
+  let fontTimer = null;
+  fontBox.addEventListener('input', ()=>{
+    clearTimeout(fontTimer);
+    fontTimer = setTimeout(()=>{
+      fontUrl = fontBox.value.trim();
+      setFontStatus(fontUrl ? '正在加载…' : '', false);
+      // The <link> lives in the document head, so this one does need a rebuild.
+      buildStage();
+    }, 700);
+  });
+
   const heightHint = overlay.querySelector('#bgaHeightHint');
   function paintHeightHint(){
     heightHint.hidden = isPaginatedEffect(effectNow()) || (typo.textHeight || 100) >= 100;
@@ -5097,6 +5181,7 @@ function openAppearanceStudio(opts){
     Object.keys(TYPO_RESET).forEach(k=>{ if(data[k] !== undefined) typo[k] = data[k]; });
     if(data.background !== undefined) bg = data.background;
     if(data.customCss !== undefined){ css = data.customCss; cssBox.value = css; }
+    if(data.fontUrl !== undefined){ fontUrl = data.fontUrl; fontBox.value = fontUrl; }
     extraRs = Object.assign({}, extraRs, pickAppearance(data));
     paintSliders(); paintRules(); repaintInk(); paintBgRow();
     // A preset carries the page effect, which the document is built from.
@@ -5116,10 +5201,11 @@ function openAppearanceStudio(opts){
     Object.assign(typo, TYPO_RESET);
     paintSliders(); paintRules(); repaintInk(); pushTypo();
   });
-  overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
+  overlay.querySelector('[data-close]').addEventListener('click', ()=>{ stopFontMsg(); closeModal(overlay); });
   overlay.querySelector('#bgaDone').addEventListener('click', ()=>{
     css = cssBox.value;
-    onApply({ typo, background: bg, customCss: css, extra: extraRs });
+    onApply({ typo, background: bg, customCss: css, extra: Object.assign({}, extraRs, { fontUrl }) });
+    stopFontMsg();
     closeModal(overlay);
   });
   return overlay;
@@ -5241,6 +5327,7 @@ async function openReaderSettingsSheet(story, onSaved, previewEntry){
     openAppearanceStudio({
       story, entry: previewEntry,
       startTypo: typo, startBg: chosenBg, startEffect: chosenEffect,
+      startFontUrl: overlay.querySelector('#fontUrlInput').value.trim(),
       startCss: overlay.querySelector('#customCssInputR').value,
       onApply: ({ typo: next, background, customCss, extra })=>{
         Object.assign(typo, next);

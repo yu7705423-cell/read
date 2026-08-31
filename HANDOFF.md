@@ -349,6 +349,16 @@ HTML 作品是 `story.kind === 'html'`,正文原样交给独立的 `sandbox="all
 - 章节标题(h1/h2)会被正文提取重复一遍,所以首段若与标题相同就删掉,不然页面上标题出现两次
 - **txt 一次只用一种章节正则**:三种模式(第N章 / Chapter N / 1、)按顺序试,第一个能切出 ≥3 章的胜出。混着用会把书切碎;少于 3 处命中当作正文里偶然提到,不切——「他说第一章很好看」不该把书劈成两半
 
+### 字体链接
+
+**字体名不能从 URL 猜**。原来只认 Google Fonts 的 `?family=` 形式,任何别的链接(自托管 css、别家字体站)都解析成空字符串——样式表加载了,正文却没引用那个字体,表现就是"输了链接没变化"。
+
+现在从 `document.fonts` 读真实的 @font-face 族名:跨域样式表的 `cssRules` 会抛 SecurityError,但 FontFaceSet 里的**名字仍然读得到**。URL 解析保留作为立即生效的首选(不用等文件到),拿到真名后覆盖。
+
+`document.fonts.ready` **不能只等一次**——它可能在链接的样式表还没解析完时就 resolve,那一刻 `document.fonts` 是空的。所以配合 link 的 load 事件 + 有限次轮询。
+
+**加载失败要说出来**。阅读文档是 `sandbox="allow-scripts"` 的 opaque origin,取字体时带 `Origin: null`,服务器不给 CORS 头就会被拒。Google 的 `fonts.gstatic.com` 回 `*` 所以没事,自托管的多半没配。这种情况下字体名有、文字没变,最容易让人以为是 App 坏了,所以文档会把 `{mmFontStatus:{family, ok}}` 报回父页面,调整台里明说原因。**不要为此加 `allow-same-origin`**——那等于让作品里的 HTML 能碰 App 的同源数据,拿安全换一个字体不值。
+
 ### 外观调整台(openAppearanceStudio)
 
 阅读设置里的「打开外观调整」进去,位置、辅助线、背景、正文颜色、自定义CSS 全部对着实时预览调。
