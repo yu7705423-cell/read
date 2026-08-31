@@ -110,6 +110,7 @@ Instruction(共同的指令 / 主题 / 系列)
 {
   background, pageEffect, showPageNav, customCss, fontUrl,
   textOffsetX, textOffsetY, fontScale,          // 背景上的正文位置与字号
+  textWidth,                                    // 正文块宽度百分比,100=满宽
   textColor,                                    // 正文颜色,''=跟随主题
   ruleStyle:'none'|'solid'|'dashed'|'grid', ruleGap, ruleOffset,   // 阅读辅助线
   voicePresetId,                                 // 默认语音(没单独绑定的角色用它)
@@ -337,10 +338,12 @@ HTML 作品是 `story.kind === 'html'`,正文原样交给独立的 `sandbox="all
 
 滚动模式记 scrollY 比例,翻页模式记页码(页数变了就退回按比例折算)。写库有防抖,关阅读页时会补写没落盘的那次。**读书不算编辑,不动 `updatedAt`**,否则书架顺序会被读书行为搅乱。
 
-### 正文位置 / 字号 / 颜色 / 辅助线
+### 正文位置 / 宽度 / 字号 / 颜色 / 辅助线
 
 - 位置用 **padding 不是 transform**:transform 会把文字挪出分页测量过的盒子,页数就算错了
-- 左右偏移会让另一侧变窄,两侧都用 `max(8px, ...)` 兜底,否则偏移大了文字会贴到屏幕边缘
+- **宽度和位置是分开的两件事**。先用 `--mm-width`(无单位小数)定死正文块宽度,再让偏移在剩下的空间里滑动它。实现上**只 clamp 左边距,右边距由「总宽 - 块宽 - 左边距」推出来**——两边各自 clamp 的话,偏移大了会把块**挤窄**而不是**移过去**(宽度 30% 右移 220 会被压成 26px)
+- 滑杆范围:上下 -200~800、左右 ±400、宽度 15%~100%、字号 25%~400%。放这么开是因为背景图的空白有时只有一小块,得能把正文缩小塞进角落
+- **往上挪有个物理天花板**:padding 不能为负,`padding-top` 撞到 0 就是贴顶了,滑杆再往左拉也不动。这不是人为限制,别去"修";想再往上只能靠负 margin,但 multicol 里 block 方向的 margin 只作用在第一个分片上,后面的页不会跟着动
 - 辅助线画在页面容器的 `background` 上,**纯装饰**:不进入布局、不改变换行、不影响页数
 - 横线用 `repeating-linear-gradient`;虚线和方格用平铺的内联 SVG——CSS 渐变表达不了"每 N 像素画一条虚线"
 - 实时预览靠 postMessage 改 CSS 变量,不重建 iframe;分页模式改完会重跑分页

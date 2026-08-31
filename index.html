@@ -750,7 +750,7 @@ function makeReaderSettings(over){
     customCss:'', fontUrl:'',
     voicePresetId:'', summaryPresetId:'', annotatePresetId:'',
     narrationMode:'tts', narrationPresetId:'', narrationVoiceId:'', systemVoiceURI:'', systemRate:1,
-    textOffsetX:0, textOffsetY:0, fontScale:100, textColor:'',
+    textOffsetX:0, textOffsetY:0, fontScale:100, textWidth:100, textColor:'',
     ruleStyle:'none', ruleGap:34, ruleOffset:0
   }, over || {});
 }
@@ -3808,7 +3808,8 @@ function buildReaderDoc(entry, story, insets, restore){
   const isPaginate = isPaginatedEffect(effect);
   const typo = {
     textOffsetX: rs.textOffsetX|0, textOffsetY: rs.textOffsetY|0,
-    fontScale: rs.fontScale || 100, textColor: rs.textColor || '',
+    fontScale: rs.fontScale || 100, textWidth: rs.textWidth || 100,
+    textColor: rs.textColor || '',
     ruleStyle: rs.ruleStyle || 'none', ruleGap: rs.ruleGap || 34, ruleOffset: rs.ruleOffset|0
   };
 
@@ -3846,19 +3847,30 @@ function buildReaderDoc(entry, story, insets, restore){
       --mm-pad-top:${padTop}px; --mm-pad-bottom:${padBottom}px;
       --mm-offset-x:${typo.textOffsetX|0}px; --mm-offset-y:${typo.textOffsetY|0}px;
       --mm-font-scale:${(typo.fontScale||100)/100};
+      --mm-width:${(typo.textWidth || 100) / 100};
       --mm-ink:${typo.textColor || t.ink};
     }
     /* Nudging the text over a background picture is padding, not transform:
-       a transform would move the text off the box the pagination measured. */
+       a transform would move the text off the box the pagination measured.
+       Padding cannot go negative, so pushing up stops when the text reaches
+       the top edge — that is the real limit, not a chosen one. */
     #pages{
-      padding:calc(var(--mm-pad-top) + var(--mm-offset-y)) 0 var(--mm-pad-bottom);
+      padding:max(0px, calc(var(--mm-pad-top) + var(--mm-offset-y))) 0 var(--mm-pad-bottom);
       background-repeat:repeat;
     }
-    /* Shifting the block sideways narrows it on the far side; clamp so the far
-       margin never reaches zero and lets the text run into the screen edge. */
+    /* Width and position are independent. The block's width is fixed first,
+       then the offset slides that block across whatever room is left and stops
+       at the edges — clamping the left edge and deriving the right one from it
+       keeps the width constant, whereas clamping both paddings separately
+       would let a large offset eat the block instead of moving it.
+       Percentages resolve against the column, which is the screen width. */
     #pages .inner{
-      padding-left:max(8px, calc(22px + var(--mm-offset-x)));
-      padding-right:max(8px, calc(22px - var(--mm-offset-x)));
+      --mm-content:calc((100% - 44px) * var(--mm-width));
+      --mm-left:clamp(0px,
+                      calc(22px + (100% - 44px - var(--mm-content)) / 2 + var(--mm-offset-x)),
+                      calc(100% - var(--mm-content)));
+      padding-left:var(--mm-left);
+      padding-right:calc(100% - var(--mm-content) - var(--mm-left));
     }
     #pages .inner > *{ max-width:100%; }
     ${isPaginate ? `
@@ -3903,6 +3915,7 @@ function buildReaderDoc(entry, story, insets, restore){
       setVar('--mm-offset-x', (t.textOffsetX|0) + 'px');
       setVar('--mm-offset-y', (t.textOffsetY|0) + 'px');
       setVar('--mm-font-scale', String((t.fontScale || 100) / 100));
+      setVar('--mm-width', String((t.textWidth || 100) / 100));
       // Empty means "follow the theme", so fall back rather than blanking it.
       if(t.textColor !== undefined) setVar('--mm-ink', t.textColor || THEME_INK);
       var pages = document.getElementById('pages');
@@ -4505,7 +4518,12 @@ function bindInkRow(scope, id, getCurrent, onPick){
    the values handed back are unscaled — real reader pixels. */
 function openBgAdjuster(bg, startTypo, onApply){
   const typo = Object.assign({}, startTypo);
-  const LIMITS = { textOffsetX:80, textOffsetY:120 };
+  /* Read off the sliders so the drag and the sliders can never disagree about
+     how far the text may go. */
+  const limitOf = (sel)=>{
+    const el = overlay.querySelector(sel);
+    return { min:parseInt(el.min,10), max:parseInt(el.max,10) };
+  };
   const overlay = openModal(`
     <div class="modal-header"><h2>调整正文位置</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
     <div class="modal-body">
@@ -4517,9 +4535,10 @@ function openBgAdjuster(bg, startTypo, onApply){
         </div>
         <div class="bga-hint">按住文字拖动,或用下面的滑杆微调</div>
       </div>
-      <label class="slider-row"><span>上下</span><input type="range" id="bgaY" min="-120" max="120" step="2" value="${typo.textOffsetY|0}"><b id="bgaYVal">${typo.textOffsetY|0}</b></label>
-      <label class="slider-row"><span>左右</span><input type="range" id="bgaX" min="-80" max="80" step="2" value="${typo.textOffsetX|0}"><b id="bgaXVal">${typo.textOffsetX|0}</b></label>
-      <label class="slider-row"><span>字号</span><input type="range" id="bgaScale" min="70" max="180" step="2" value="${typo.fontScale||100}"><b id="bgaScaleVal">${typo.fontScale||100}%</b></label>
+      <label class="slider-row"><span>上下</span><input type="range" id="bgaY" min="-200" max="800" step="2" value="${typo.textOffsetY|0}"><b id="bgaYVal">${typo.textOffsetY|0}</b></label>
+      <label class="slider-row"><span>左右</span><input type="range" id="bgaX" min="-400" max="400" step="2" value="${typo.textOffsetX|0}"><b id="bgaXVal">${typo.textOffsetX|0}</b></label>
+      <label class="slider-row"><span>宽度</span><input type="range" id="bgaWidth" min="15" max="100" step="1" value="${typo.textWidth||100}"><b id="bgaWidthVal">${typo.textWidth||100}%</b></label>
+      <label class="slider-row"><span>字号</span><input type="range" id="bgaScale" min="25" max="400" step="5" value="${typo.fontScale||100}"><b id="bgaScaleVal">${typo.fontScale||100}%</b></label>
       ${inkRowHtml('bgaInk', typo.textColor || '', '正文颜色')}
       <div class="btn-row bga-actions">
         <button class="btn sm" id="bgaReset">复位</button>
@@ -4544,22 +4563,31 @@ function openBgAdjuster(bg, startTypo, onApply){
     const ar = (window.innerWidth || 390) / (window.innerHeight || 780);
     // A phone is far taller than it is wide, so height is the generous budget
     // here — a stage sized to fit without scrolling ends up too small to aim in.
-    let h = Math.min((window.innerHeight || 780) * 0.62, availW / ar);
+    let h = Math.min((window.innerHeight || 780) * 0.58, availW / ar);
     stage.style.width = Math.round(h * ar) + 'px';
     stage.style.height = Math.round(h) + 'px';
   }
   function paintStage(){
     sizeStage();
     const s = scaleOf();
+    // Mirrors the reader's own maths, clamps included: fix the block's width,
+    // slide it, stop at the edges. The stage must stop where the real page
+    // stops rather than promise room the reader does not have.
+    const vw = window.innerWidth || 390;
+    const room = vw - BASE_PAD_SIDE * 2;
+    const content = room * ((typo.textWidth || 100) / 100);
+    const left = Math.max(0, Math.min(vw - content,
+                          BASE_PAD_SIDE + (room - content) / 2 + typo.textOffsetX));
     textEl.style.paddingTop = Math.max(0, (BASE_PAD_TOP + typo.textOffsetY) * s) + 'px';
-    textEl.style.paddingLeft = Math.max(8, BASE_PAD_SIDE + typo.textOffsetX) * s + 'px';
-    textEl.style.paddingRight = Math.max(8, BASE_PAD_SIDE - typo.textOffsetX) * s + 'px';
+    textEl.style.paddingLeft = left * s + 'px';
+    textEl.style.paddingRight = (vw - content - left) * s + 'px';
     textEl.style.fontSize = (BASE_FONT * ((typo.fontScale || 100) / 100) * s) + 'px';
     textEl.style.color = typo.textColor || 'var(--ink)';
   }
   const sliders = [
     ['#bgaY','#bgaYVal','textOffsetY', v=>String(v)],
     ['#bgaX','#bgaXVal','textOffsetX', v=>String(v)],
+    ['#bgaWidth','#bgaWidthVal','textWidth', v=>v+'%'],
     ['#bgaScale','#bgaScaleVal','fontScale', v=>v+'%']
   ];
   function paintSliders(){
@@ -4587,9 +4615,9 @@ function openBgAdjuster(bg, startTypo, onApply){
   textEl.addEventListener('pointermove', (e)=>{
     if(!dragging) return;
     e.preventDefault();
-    const clamp = (v,lim)=> Math.max(-lim, Math.min(lim, Math.round(v/2)*2));
-    typo.textOffsetX = clamp(dragging.ox + (e.clientX - dragging.x) / dragging.s, LIMITS.textOffsetX);
-    typo.textOffsetY = clamp(dragging.oy + (e.clientY - dragging.y) / dragging.s, LIMITS.textOffsetY);
+    const clamp = (v,l)=> Math.max(l.min, Math.min(l.max, Math.round(v/2)*2));
+    typo.textOffsetX = clamp(dragging.ox + (e.clientX - dragging.x) / dragging.s, limitOf('#bgaX'));
+    typo.textOffsetY = clamp(dragging.oy + (e.clientY - dragging.y) / dragging.s, limitOf('#bgaY'));
     paintStage(); paintSliders();
   });
   const endDrag = ()=>{ dragging = null; stage.classList.remove('dragging'); };
@@ -4600,7 +4628,8 @@ function openBgAdjuster(bg, startTypo, onApply){
     typo.textColor = v; paintStage();
   });
   overlay.querySelector('#bgaReset').addEventListener('click', ()=>{
-    typo.textOffsetX = 0; typo.textOffsetY = 0; typo.fontScale = 100; typo.textColor = '';
+    typo.textOffsetX = 0; typo.textOffsetY = 0; typo.fontScale = 100;
+    typo.textWidth = 100; typo.textColor = '';
     paintSliders(); repaintInk(); paintStage();
   });
   overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
@@ -4650,9 +4679,10 @@ async function openReaderSettingsSheet(story, onSaved){
         <div class="section-title" style="margin-top:16px;">正文位置与字号</div>
         <div class="hint-text" style="margin:-4px 2px 6px;">想对着背景图挪正文,点下面这个按钮,在图上直接拖。</div>
         <div class="btn-row"><button class="btn sm primary block" id="openBgAdjustBtn">在背景上调整正文位置</button></div>
-        <label class="slider-row"><span>上下</span><input type="range" id="tOffsetY" min="-120" max="120" step="2" value="${rs.textOffsetY|0}"><b id="tOffsetYVal">${rs.textOffsetY|0}</b></label>
-        <label class="slider-row"><span>左右</span><input type="range" id="tOffsetX" min="-80" max="80" step="2" value="${rs.textOffsetX|0}"><b id="tOffsetXVal">${rs.textOffsetX|0}</b></label>
-        <label class="slider-row"><span>字号</span><input type="range" id="tFontScale" min="70" max="180" step="2" value="${rs.fontScale||100}"><b id="tFontScaleVal">${rs.fontScale||100}%</b></label>
+        <label class="slider-row"><span>上下</span><input type="range" id="tOffsetY" min="-200" max="800" step="2" value="${rs.textOffsetY|0}"><b id="tOffsetYVal">${rs.textOffsetY|0}</b></label>
+        <label class="slider-row"><span>左右</span><input type="range" id="tOffsetX" min="-400" max="400" step="2" value="${rs.textOffsetX|0}"><b id="tOffsetXVal">${rs.textOffsetX|0}</b></label>
+        <label class="slider-row"><span>宽度</span><input type="range" id="tTextWidth" min="15" max="100" step="1" value="${rs.textWidth||100}"><b id="tTextWidthVal">${rs.textWidth||100}%</b></label>
+        <label class="slider-row"><span>字号</span><input type="range" id="tFontScale" min="25" max="400" step="5" value="${rs.fontScale||100}"><b id="tFontScaleVal">${rs.fontScale||100}%</b></label>
         <label class="field-label" style="margin-top:10px;">正文颜色</label>
         ${inkRowHtml('tInkRow', rs.textColor || '')}
         <div class="hint-text">不选就跟着深色/浅色主题走。配了背景图之后,这里换个颜色能让正文看清。</div>
@@ -4715,10 +4745,11 @@ async function openReaderSettingsSheet(story, onSaved){
      re-render, so embedded widgets and the reading position survive. */
   let typo = {
     textOffsetX: rs.textOffsetX|0, textOffsetY: rs.textOffsetY|0,
-    fontScale: rs.fontScale || 100, textColor: rs.textColor || '',
+    fontScale: rs.fontScale || 100, textWidth: rs.textWidth || 100,
+    textColor: rs.textColor || '',
     ruleStyle: rs.ruleStyle || 'none', ruleGap: rs.ruleGap || 34, ruleOffset: rs.ruleOffset|0
   };
-  const TYPO_DEFAULTS = { textOffsetX:0, textOffsetY:0, fontScale:100, textColor:'',
+  const TYPO_DEFAULTS = { textOffsetX:0, textOffsetY:0, fontScale:100, textWidth:100, textColor:'',
                           ruleStyle:'none', ruleGap:34, ruleOffset:0 };
   function previewTypo(){
     const ifr = document.querySelector('#readerIframe');
@@ -4731,6 +4762,7 @@ async function openReaderSettingsSheet(story, onSaved){
       typo.textOffsetX = next.textOffsetX;
       typo.textOffsetY = next.textOffsetY;
       typo.fontScale = next.fontScale;
+      typo.textWidth = next.textWidth;
       typo.textColor = next.textColor;
       syncTypoUi();
       previewTypo();
@@ -4740,6 +4772,7 @@ async function openReaderSettingsSheet(story, onSaved){
     const sliders = [
       ['#tOffsetY','#tOffsetYVal','textOffsetY', v=>String(v)],
       ['#tOffsetX','#tOffsetXVal','textOffsetX', v=>String(v)],
+      ['#tTextWidth','#tTextWidthVal','textWidth', v=>v+'%'],
       ['#tFontScale','#tFontScaleVal','fontScale', v=>v+'%'],
       ['#tRuleGap','#tRuleGapVal','ruleGap', v=>String(v)],
       ['#tRuleOffset','#tRuleOffsetVal','ruleOffset', v=>String(v)]
@@ -4862,7 +4895,7 @@ async function openReaderSettingsSheet(story, onSaved){
       pageEffect: chosenEffect,
       showPageNav: (overlay.querySelector('#showPageNavChk')||{}).checked !== false,
       textOffsetX: typo.textOffsetX, textOffsetY: typo.textOffsetY, fontScale: typo.fontScale,
-      textColor: typo.textColor,
+      textWidth: typo.textWidth, textColor: typo.textColor,
       ruleStyle: typo.ruleStyle, ruleGap: typo.ruleGap, ruleOffset: typo.ruleOffset,
       customCss: overlay.querySelector('#customCssInputR').value,
       fontUrl: overlay.querySelector('#fontUrlInput').value.trim(),
