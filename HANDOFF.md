@@ -110,6 +110,7 @@ Instruction(共同的指令 / 主题 / 系列)
 {
   background, pageEffect, showPageNav, customCss, fontUrl,
   textOffsetX, textOffsetY, fontScale,          // 背景上的正文位置与字号
+  textColor,                                    // 正文颜色,''=跟随主题
   ruleStyle:'none'|'solid'|'dashed'|'grid', ruleGap, ruleOffset,   // 阅读辅助线
   voicePresetId,                                 // 默认语音(没单独绑定的角色用它)
   narrationMode:'tts'|'system'|'off', narrationPresetId, systemVoiceURI, systemRate,
@@ -336,13 +337,15 @@ HTML 作品是 `story.kind === 'html'`,正文原样交给独立的 `sandbox="all
 
 滚动模式记 scrollY 比例,翻页模式记页码(页数变了就退回按比例折算)。写库有防抖,关阅读页时会补写没落盘的那次。**读书不算编辑,不动 `updatedAt`**,否则书架顺序会被读书行为搅乱。
 
-### 正文位置 / 字号 / 辅助线
+### 正文位置 / 字号 / 颜色 / 辅助线
 
 - 位置用 **padding 不是 transform**:transform 会把文字挪出分页测量过的盒子,页数就算错了
 - 左右偏移会让另一侧变窄,两侧都用 `max(8px, ...)` 兜底,否则偏移大了文字会贴到屏幕边缘
 - 辅助线画在页面容器的 `background` 上,**纯装饰**:不进入布局、不改变换行、不影响页数
 - 横线用 `repeating-linear-gradient`;虚线和方格用平铺的内联 SVG——CSS 渐变表达不了"每 N 像素画一条虚线"
 - 实时预览靠 postMessage 改 CSS 变量,不重建 iframe;分页模式改完会重跑分页
+- **正文颜色**存 `textColor`,空串 = 跟随主题。文档里 body 写的是 `color:var(--mm-ink)`,颜色和位置字号共用 `mmTypography` 这一条消息。`applyTypography` 里判的是 `textColor !== undefined` 而**不是**真值——否则"改回跟随主题"(空串)会被当成没传,永远回不去主题色;拿到空串时要填主题色 `THEME_INK`,不能把变量置空
+- 颜色选择器(`inkRowHtml` / `bindInkRow`)在阅读设置和调整器里各有一份,选中态按当前值重画。自选的颜色不在预设里,重画时要把它写回 `<input type="color">`,不然自选完再回来会显示成上一个预设色
 
 **背景调整器(`openBgAdjuster`)**:选完背景图会**自己弹出来**,不用先保存再看效果。一个手机形状的舞台放大图,示例正文压在上面,可以直接**拖文字**,也可以用滑杆。
 

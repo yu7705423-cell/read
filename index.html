@@ -289,6 +289,26 @@ body.mm-locked{overflow:hidden;}
 }
 .bga-stage.dragging .bga-text{cursor:grabbing;}
 .bga-text p{margin:0 0 1.1em;}
+/* Text colour picker: preset swatches plus a native colour input, shown both
+   in reader settings and inside the adjuster (where the clash is visible). */
+.ink-row{display:flex; flex-wrap:wrap; gap:8px; align-items:center;}
+.ink-row .ink-label{font-size:12.5px; color:var(--ink-soft); margin-right:2px;}
+.ink-swatch{
+  width:30px; height:30px; border-radius:8px; border:2px solid var(--border);
+  cursor:pointer; flex-shrink:0; padding:0; background:none;
+}
+.ink-swatch.selected{border-color:var(--accent); box-shadow:0 0 0 2px var(--accent-soft);}
+.ink-swatch.auto{
+  display:flex; align-items:center; justify-content:center;
+  font-size:10px; color:var(--ink-soft); background:var(--surface-2); width:auto; padding:0 8px;
+}
+.ink-pick{
+  width:30px; height:30px; border-radius:8px; border:2px solid var(--border);
+  padding:0; background:none; cursor:pointer; flex-shrink:0;
+}
+.ink-pick::-webkit-color-swatch-wrapper{padding:2px;}
+.ink-pick::-webkit-color-swatch{border:none; border-radius:5px;}
+
 /* A stage big enough to aim in pushes the buttons past the fold, so they ride
    along the bottom of the scrolling body instead. */
 .bga-actions{
@@ -730,7 +750,7 @@ function makeReaderSettings(over){
     customCss:'', fontUrl:'',
     voicePresetId:'', summaryPresetId:'', annotatePresetId:'',
     narrationMode:'tts', narrationPresetId:'', narrationVoiceId:'', systemVoiceURI:'', systemRate:1,
-    textOffsetX:0, textOffsetY:0, fontScale:100,
+    textOffsetX:0, textOffsetY:0, fontScale:100, textColor:'',
     ruleStyle:'none', ruleGap:34, ruleOffset:0
   }, over || {});
 }
@@ -3788,7 +3808,7 @@ function buildReaderDoc(entry, story, insets, restore){
   const isPaginate = isPaginatedEffect(effect);
   const typo = {
     textOffsetX: rs.textOffsetX|0, textOffsetY: rs.textOffsetY|0,
-    fontScale: rs.fontScale || 100,
+    fontScale: rs.fontScale || 100, textColor: rs.textColor || '',
     ruleStyle: rs.ruleStyle || 'none', ruleGap: rs.ruleGap || 34, ruleOffset: rs.ruleOffset|0
   };
 
@@ -3806,7 +3826,7 @@ function buildReaderDoc(entry, story, insets, restore){
     *{box-sizing:border-box;}
     html,body{height:100%; overscroll-behavior:none;}
     body{
-      margin:0; background:${bg}; color:${t.ink};
+      margin:0; background:${bg}; color:var(--mm-ink);
       font-family:${fontFamily ? `"${fontFamily}",` : ''}"Noto Serif SC",Georgia,serif;
       font-size:calc(16.5px * var(--mm-font-scale)); line-height:1.95; word-break:break-word;
       -webkit-tap-highlight-color:transparent;
@@ -3826,6 +3846,7 @@ function buildReaderDoc(entry, story, insets, restore){
       --mm-pad-top:${padTop}px; --mm-pad-bottom:${padBottom}px;
       --mm-offset-x:${typo.textOffsetX|0}px; --mm-offset-y:${typo.textOffsetY|0}px;
       --mm-font-scale:${(typo.fontScale||100)/100};
+      --mm-ink:${typo.textColor || t.ink};
     }
     /* Nudging the text over a background picture is padding, not transform:
        a transform would move the text off the box the pagination measured. */
@@ -3854,6 +3875,7 @@ function buildReaderDoc(entry, story, insets, restore){
   <script>
   window.__mm = (function(){
     var RULE_COLOR = ${JSON.stringify(t.inkSoft || '#999')};
+    var THEME_INK = ${JSON.stringify(t.ink)};
     function setVar(k,v){ document.documentElement.style.setProperty(k, v); }
     function ruleBackground(t){
       var gap = Math.max(12, t.ruleGap || 34);
@@ -3881,6 +3903,8 @@ function buildReaderDoc(entry, story, insets, restore){
       setVar('--mm-offset-x', (t.textOffsetX|0) + 'px');
       setVar('--mm-offset-y', (t.textOffsetY|0) + 'px');
       setVar('--mm-font-scale', String((t.fontScale || 100) / 100));
+      // Empty means "follow the theme", so fall back rather than blanking it.
+      if(t.textColor !== undefined) setVar('--mm-ink', t.textColor || THEME_INK);
       var pages = document.getElementById('pages');
       if(pages){
         pages.style.backgroundImage = ruleBackground(t);
@@ -4436,6 +4460,42 @@ function openCopySheet(story, entry){
   });
 }
 
+/* Text colour is one control in two places, so the markup and the wiring live
+   here rather than being written out twice. */
+/* Four covers the real cases — dark text, light text, and two warm tints for
+   photos — and keeps the row on one line next to its label. */
+const INK_PRESETS = [
+  { name:'近黑', value:'#1B1A18' }, { name:'纯白', value:'#FFFFFF' },
+  { name:'米白', value:'#F3ECDF' }, { name:'暖黄', value:'#E9D6A3' }
+];
+function inkRowHtml(id, current, label){
+  return `<div class="ink-row" id="${id}">
+    ${label ? `<span class="ink-label">${label}</span>` : ''}
+    <button class="ink-swatch auto ${current?'':'selected'}" data-ink="">跟随主题</button>
+    ${INK_PRESETS.map(c=>`<button class="ink-swatch ${current===c.value?'selected':''}" data-ink="${c.value}" style="background:${c.value};" title="${c.name}"></button>`).join('')}
+    <input type="color" class="ink-pick" value="${/^#[0-9a-f]{6}$/i.test(current||'') ? current : '#1B1A18'}" title="自选颜色">
+  </div>`;
+}
+/* onPick receives '' for "follow the theme". Returns a repaint for callers
+   whose colour can also change from elsewhere (the adjuster, a reset). */
+function bindInkRow(scope, id, getCurrent, onPick){
+  const row = scope.querySelector('#'+id);
+  if(!row) return ()=>{};
+  const repaint = ()=>{
+    const cur = getCurrent();
+    row.querySelectorAll('[data-ink]').forEach(b=>b.classList.toggle('selected', b.dataset.ink === cur));
+    // A freely picked colour matches no swatch; show it on the picker instead.
+    if(cur && !INK_PRESETS.some(c=>c.value===cur) && /^#[0-9a-f]{6}$/i.test(cur)){
+      row.querySelector('.ink-pick').value = cur;
+    }
+  };
+  row.querySelectorAll('[data-ink]').forEach(b=>{
+    b.addEventListener('click', (e)=>{ e.preventDefault(); onPick(b.dataset.ink); repaint(); });
+  });
+  row.querySelector('.ink-pick').addEventListener('input', (e)=>{ onPick(e.target.value); repaint(); });
+  return repaint;
+}
+
 /* ================= Background adjuster =================
    Opens right after a background picture is picked: the picture fills a
    phone-shaped stage and dummy body text sits on top, positioned with the
@@ -4460,7 +4520,7 @@ function openBgAdjuster(bg, startTypo, onApply){
       <label class="slider-row"><span>上下</span><input type="range" id="bgaY" min="-120" max="120" step="2" value="${typo.textOffsetY|0}"><b id="bgaYVal">${typo.textOffsetY|0}</b></label>
       <label class="slider-row"><span>左右</span><input type="range" id="bgaX" min="-80" max="80" step="2" value="${typo.textOffsetX|0}"><b id="bgaXVal">${typo.textOffsetX|0}</b></label>
       <label class="slider-row"><span>字号</span><input type="range" id="bgaScale" min="70" max="180" step="2" value="${typo.fontScale||100}"><b id="bgaScaleVal">${typo.fontScale||100}%</b></label>
-      <div class="hint-text" style="margin-top:6px;">这里只调正文的位置和字号,翻页样式、辅助线这些还在阅读设置里。</div>
+      ${inkRowHtml('bgaInk', typo.textColor || '', '正文颜色')}
       <div class="btn-row bga-actions">
         <button class="btn sm" id="bgaReset">复位</button>
         <button class="btn sm primary" id="bgaDone" style="flex:1;">完成</button>
@@ -4484,7 +4544,7 @@ function openBgAdjuster(bg, startTypo, onApply){
     const ar = (window.innerWidth || 390) / (window.innerHeight || 780);
     // A phone is far taller than it is wide, so height is the generous budget
     // here — a stage sized to fit without scrolling ends up too small to aim in.
-    let h = Math.min((window.innerHeight || 780) * 0.72, availW / ar);
+    let h = Math.min((window.innerHeight || 780) * 0.62, availW / ar);
     stage.style.width = Math.round(h * ar) + 'px';
     stage.style.height = Math.round(h) + 'px';
   }
@@ -4495,6 +4555,7 @@ function openBgAdjuster(bg, startTypo, onApply){
     textEl.style.paddingLeft = Math.max(8, BASE_PAD_SIDE + typo.textOffsetX) * s + 'px';
     textEl.style.paddingRight = Math.max(8, BASE_PAD_SIDE - typo.textOffsetX) * s + 'px';
     textEl.style.fontSize = (BASE_FONT * ((typo.fontScale || 100) / 100) * s) + 'px';
+    textEl.style.color = typo.textColor || 'var(--ink)';
   }
   const sliders = [
     ['#bgaY','#bgaYVal','textOffsetY', v=>String(v)],
@@ -4535,9 +4596,12 @@ function openBgAdjuster(bg, startTypo, onApply){
   textEl.addEventListener('pointerup', endDrag);
   textEl.addEventListener('pointercancel', endDrag);
 
+  const repaintInk = bindInkRow(overlay, 'bgaInk', ()=>typo.textColor||'', (v)=>{
+    typo.textColor = v; paintStage();
+  });
   overlay.querySelector('#bgaReset').addEventListener('click', ()=>{
-    typo.textOffsetX = 0; typo.textOffsetY = 0; typo.fontScale = 100;
-    paintSliders(); paintStage();
+    typo.textOffsetX = 0; typo.textOffsetY = 0; typo.fontScale = 100; typo.textColor = '';
+    paintSliders(); repaintInk(); paintStage();
   });
   overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
   overlay.querySelector('#bgaDone').addEventListener('click', ()=>{
@@ -4589,6 +4653,9 @@ async function openReaderSettingsSheet(story, onSaved){
         <label class="slider-row"><span>上下</span><input type="range" id="tOffsetY" min="-120" max="120" step="2" value="${rs.textOffsetY|0}"><b id="tOffsetYVal">${rs.textOffsetY|0}</b></label>
         <label class="slider-row"><span>左右</span><input type="range" id="tOffsetX" min="-80" max="80" step="2" value="${rs.textOffsetX|0}"><b id="tOffsetXVal">${rs.textOffsetX|0}</b></label>
         <label class="slider-row"><span>字号</span><input type="range" id="tFontScale" min="70" max="180" step="2" value="${rs.fontScale||100}"><b id="tFontScaleVal">${rs.fontScale||100}%</b></label>
+        <label class="field-label" style="margin-top:10px;">正文颜色</label>
+        ${inkRowHtml('tInkRow', rs.textColor || '')}
+        <div class="hint-text">不选就跟着深色/浅色主题走。配了背景图之后,这里换个颜色能让正文看清。</div>
 
         <div class="section-title" style="margin-top:16px;">阅读辅助线</div>
         <div class="chip-row">
@@ -4648,10 +4715,11 @@ async function openReaderSettingsSheet(story, onSaved){
      re-render, so embedded widgets and the reading position survive. */
   let typo = {
     textOffsetX: rs.textOffsetX|0, textOffsetY: rs.textOffsetY|0,
-    fontScale: rs.fontScale || 100,
+    fontScale: rs.fontScale || 100, textColor: rs.textColor || '',
     ruleStyle: rs.ruleStyle || 'none', ruleGap: rs.ruleGap || 34, ruleOffset: rs.ruleOffset|0
   };
-  const TYPO_DEFAULTS = { textOffsetX:0, textOffsetY:0, fontScale:100, ruleStyle:'none', ruleGap:34, ruleOffset:0 };
+  const TYPO_DEFAULTS = { textOffsetX:0, textOffsetY:0, fontScale:100, textColor:'',
+                          ruleStyle:'none', ruleGap:34, ruleOffset:0 };
   function previewTypo(){
     const ifr = document.querySelector('#readerIframe');
     if(ifr && ifr.contentWindow) ifr.contentWindow.postMessage({ mmTypography: typo }, '*');
@@ -4663,6 +4731,7 @@ async function openReaderSettingsSheet(story, onSaved){
       typo.textOffsetX = next.textOffsetX;
       typo.textOffsetY = next.textOffsetY;
       typo.fontScale = next.fontScale;
+      typo.textColor = next.textColor;
       syncTypoUi();
       previewTypo();
     });
@@ -4695,11 +4764,14 @@ async function openReaderSettingsSheet(story, onSaved){
       b.addEventListener('click', ()=>{ typo.ruleStyle = b.dataset.rule; paintRuleChips(); previewTypo(); });
     });
     paintRuleChips();
-    syncTypoUi = ()=>{ paintSliders(); paintRuleChips(); };
+    const repaintInk = bindInkRow(overlay, 'tInkRow', ()=>typo.textColor||'', (v)=>{
+      typo.textColor = v; previewTypo();
+    });
+    syncTypoUi = ()=>{ paintSliders(); paintRuleChips(); repaintInk(); };
     overlay.querySelector('#openBgAdjustBtn').addEventListener('click', openTypoAdjuster);
     overlay.querySelector('#resetTypoBtn').addEventListener('click', ()=>{
       typo = Object.assign({}, TYPO_DEFAULTS);
-      paintSliders(); paintRuleChips(); previewTypo();
+      syncTypoUi(); previewTypo();
       showToast('已恢复默认排版');
     });
   }
@@ -4790,6 +4862,7 @@ async function openReaderSettingsSheet(story, onSaved){
       pageEffect: chosenEffect,
       showPageNav: (overlay.querySelector('#showPageNavChk')||{}).checked !== false,
       textOffsetX: typo.textOffsetX, textOffsetY: typo.textOffsetY, fontScale: typo.fontScale,
+      textColor: typo.textColor,
       ruleStyle: typo.ruleStyle, ruleGap: typo.ruleGap, ruleOffset: typo.ruleOffset,
       customCss: overlay.querySelector('#customCssInputR').value,
       fontUrl: overlay.querySelector('#fontUrlInput').value.trim(),
