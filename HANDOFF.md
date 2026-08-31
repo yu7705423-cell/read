@@ -111,7 +111,7 @@ Instruction(共同的指令 / 主题 / 系列)
   background, pageEffect, showPageNav, customCss, fontUrl,
   textOffsetX, textOffsetY, fontScale,          // 背景上的正文位置与字号
   textWidth,                                    // 正文块宽度百分比,100=满宽
-  textHeight,                                   // 正文块高度百分比(vh),100=不限高
+  textHeight,                                   // 正文块高度百分比(vh),100=不限高;**只在翻页模式生效**
   textColor,                                    // 正文颜色,''=跟随主题
   ruleStyle:'none'|'solid'|'dashed'|'grid', ruleGap, ruleOffset,   // 阅读辅助线
   voicePresetId,                                 // 默认语音(没单独绑定的角色用它)
@@ -345,6 +345,7 @@ HTML 作品是 `story.kind === 'html'`,正文原样交给独立的 `sandbox="all
 阅读设置里的「打开外观调整」进去,位置、辅助线、背景、正文颜色、自定义CSS 全部对着实时预览调。
 
 - **舞台就是一份真的阅读文档**:同样的 `buildReaderDoc`,同样的 sandbox iframe,按真实屏幕尺寸布局再 `transform:scale` 缩小。所以预览天然保真,vh/px 全部当真
+- 舞台必须跑**故事真实的翻页模式**。曾经为图省事写死 `pageEffect:'scroll'`,结果高度滑杆怎么拖预览都不动——因为高度只在翻页模式下成立,预览把它悄悄忽略了。写死预览的任何一项,就是在骗自己
 - **自定义CSS 必须走 iframe**。用户写的是 `.mm-p{}`、`body{}` 这种选择器,注进 App 自己的 DOM 会把界面本身改掉。文档里留了一个 `<style id="mmUserCss">`,父页面用 `{mmCustomCss}` 消息改它的 textContent,规则永远出不了那份文档
 - 滑杆改动走 postMessage(`mmTypography` / `mmBackground` / `mmCustomCss`),**不重建 iframe**,否则每拖一下都闪一次
 - iframe 会吞掉指针事件,所以拖动正文是在它上面盖一层透明的 `.bga-grab` 上做的
@@ -356,6 +357,7 @@ HTML 作品是 `story.kind === 'html'`,正文原样交给独立的 `sandbox="all
 - 位置用 **padding 不是 transform**:transform 会把文字挪出分页测量过的盒子,页数就算错了
 - **宽度和位置是分开的两件事**。先用 `--mm-width`(无单位小数)定死正文块宽度,再让偏移在剩下的空间里滑动它。实现上**只 clamp 左边距,右边距由「总宽 - 块宽 - 左边距」推出来**——两边各自 clamp 的话,偏移大了会把块**挤窄**而不是**移过去**(宽度 30% 右移 220 会被压成 26px)
 - 滑杆范围:上下 -200~800、左右 ±400、宽度 15%~100%、字号 25%~400%。放这么开是因为背景图的空白有时只有一小块,得能把正文缩小塞进角落
+- **高度上限只加在翻页分支里**。滚动是一直往下流的,溢出没有去处,同样的 padding 加上去只会在正文下面堆出一片死空白(实测多出 474px),却一点也框不住。所以竖屏滑动下高度不生效,UI 直接说明并给一个改成翻页的按钮,而不是让滑杆假装能用
 - **往上挪有个物理天花板**:padding 不能为负,`padding-top` 撞到 0 就是贴顶了,滑杆再往左拉也不动。这不是人为限制,别去"修";想再往上只能靠负 margin,但 multicol 里 block 方向的 margin 只作用在第一个分片上,后面的页不会跟着动
 - 辅助线画在页面容器的 `background` 上,**纯装饰**:不进入布局、不改变换行、不影响页数
 - 横线用 `repeating-linear-gradient`;虚线和方格用平铺的内联 SVG——CSS 渐变表达不了"每 N 像素画一条虚线"

@@ -3862,8 +3862,7 @@ function buildReaderDoc(entry, story, insets, restore){
        tall for pagination to work. */
     #pages{
       padding-top:max(0px, calc(var(--mm-pad-top) + var(--mm-offset-y)));
-      padding-bottom:max(var(--mm-pad-bottom),
-                         calc(100vh - max(0px, var(--mm-pad-top) + var(--mm-offset-y)) - var(--mm-height)));
+      padding-bottom:var(--mm-pad-bottom);
       background-repeat:repeat;
     }
     /* Width and position are independent. The block's width is fixed first,
@@ -3882,6 +3881,13 @@ function buildReaderDoc(entry, story, insets, restore){
     }
     #pages .inner > *{ max-width:100%; }
     ${isPaginate ? `
+      /* Capping the text height only means something when the overflow has
+         somewhere to go. Scrolling runs on forever, so the same padding there
+         would just add dead space below the text without ever holding it in. */
+      #pages{
+        padding-bottom:max(var(--mm-pad-bottom),
+                           calc(100vh - max(0px, var(--mm-pad-top) + var(--mm-offset-y)) - var(--mm-height)));
+      }
       html,body{ overflow:hidden; }
       body{ perspective:1400px; }
       #pages{ overflow:hidden; touch-action:pan-y; transform-origin:50% 50%; backface-visibility:hidden; }
@@ -4568,7 +4574,7 @@ function bindInkRow(scope, id, getCurrent, onPick){
    stage IS the reader, including custom CSS, which must never be injected into
    the app's own DOM where it would restyle the UI itself. */
 function openAppearanceStudio(opts){
-  const { story, entry, startTypo, startBg, startCss, onApply } = opts;
+  const { story, entry, startTypo, startBg, startCss, startEffect, onApply } = opts;
   const typo = Object.assign({}, startTypo);
   let bg = startBg || '';
   let css = startCss || '';
@@ -4594,6 +4600,10 @@ function openAppearanceStudio(opts){
         <label class="slider-row"><span>左右</span><input type="range" id="bgaX" min="-400" max="400" step="2" value="${typo.textOffsetX|0}"><b id="bgaXVal">${typo.textOffsetX|0}</b></label>
         <label class="slider-row"><span>宽度</span><input type="range" id="bgaWidth" min="15" max="100" step="1" value="${typo.textWidth||100}"><b id="bgaWidthVal">${typo.textWidth||100}%</b></label>
         <label class="slider-row"><span>高度</span><input type="range" id="bgaHeight" min="15" max="100" step="1" value="${typo.textHeight||100}"><b id="bgaHeightVal">${typo.textHeight||100}%</b></label>
+        <div class="hint-text" id="bgaHeightHint" hidden style="margin:-2px 2px 6px;">
+          竖屏滑动是一直往下滚的,框不住高度。
+          <button class="btn sm" id="bgaToPaginate" style="margin-left:4px;">改成左右翻页</button>
+        </div>
         <label class="slider-row"><span>字号</span><input type="range" id="bgaScale" min="25" max="400" step="5" value="${typo.fontScale||100}"><b id="bgaScaleVal">${typo.fontScale||100}%</b></label>
       </div>
 
@@ -4661,7 +4671,17 @@ function openAppearanceStudio(opts){
     return Object.assign({}, story.readerSettings || {}, extraRs, typo,
                          { background: bg, customCss: css });
   }
-  function stageRs(){ return Object.assign(rsNow(), { pageEffect:'scroll' }); }
+  /* The stage must run the story's real page mode. Forcing 'scroll' here made
+     the height control look broken: it only bites in paged mode, so the
+     preview silently ignored every drag of that slider. */
+  function effectNow(){
+    // The sheet's unsaved choice wins over what is on disk.
+    const e = extraRs.pageEffect !== undefined ? extraRs.pageEffect
+            : (startEffect !== undefined ? startEffect
+            : (story.readerSettings || {}).pageEffect);
+    return e || 'scroll';
+  }
+  function stageRs(){ return Object.assign(rsNow(), { pageEffect: effectNow(), showPageNav:false }); }
   function buildStage(){
     sizeStage();
     const sample = entry && (entry.content || '').trim()
@@ -4680,7 +4700,20 @@ function openAppearanceStudio(opts){
   const pushBg   = ()=> push({ mmBackground: bg || currentThemeVars().bg });
   const pushCss  = ()=> push({ mmCustomCss: css });
 
+  /* Rebuilding is only for changes the document is generated from — the page
+     effect. Everything else goes by message so the preview never flickers. */
+  const heightHint = overlay.querySelector('#bgaHeightHint');
+  function paintHeightHint(){
+    heightHint.hidden = isPaginatedEffect(effectNow()) || (typo.textHeight || 100) >= 100;
+  }
+  overlay.querySelector('#bgaToPaginate').addEventListener('click', ()=>{
+    extraRs.pageEffect = 'paginate';
+    buildStage(); paintHeightHint();
+    showToast('已改成左右翻页,高度这下管用了');
+  });
+
   buildStage();
+  paintHeightHint();
   window.addEventListener('resize', ()=>{ sizeStage(); });
 
   /* ---- tabs ---- */
@@ -4712,6 +4745,7 @@ function openAppearanceStudio(opts){
     overlay.querySelector(sel).addEventListener('input', (e)=>{
       typo[key] = parseInt(e.target.value, 10);
       overlay.querySelector(valSel).textContent = fmt(typo[key]);
+      if(key === 'textHeight') paintHeightHint();
       pushTypo();
     });
   });
@@ -4814,7 +4848,8 @@ function openAppearanceStudio(opts){
     if(data.customCss !== undefined){ css = data.customCss; cssBox.value = css; }
     extraRs = Object.assign({}, extraRs, pickAppearance(data));
     paintSliders(); paintRules(); repaintInk(); paintBgRow();
-    pushTypo(); pushBg(); pushCss();
+    // A preset carries the page effect, which the document is built from.
+    buildStage(); paintHeightHint();
   }
   overlay.querySelector('#bgaSavePreset').addEventListener('click', async ()=>{
     const name = (prompt('给这套外观起个名字') || '').trim();
@@ -4951,7 +4986,7 @@ async function openReaderSettingsSheet(story, onSaved, previewEntry){
   function openTypoAdjuster(){
     openAppearanceStudio({
       story, entry: previewEntry,
-      startTypo: typo, startBg: chosenBg,
+      startTypo: typo, startBg: chosenBg, startEffect: chosenEffect,
       startCss: overlay.querySelector('#customCssInputR').value,
       onApply: ({ typo: next, background, customCss, extra })=>{
         Object.assign(typo, next);
