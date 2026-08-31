@@ -4437,7 +4437,10 @@ async function openReaderSettingsSheet(story, onSaved){
       <input type="text" id="fontUrlInput" placeholder="https://fonts.googleapis.com/css2?family=..." value="${escapeAttr(rs.fontUrl||'')}">
       ${isHtmlStory(story) ? '' : `
         <div class="section-title" style="margin-top:16px;">正文位置与字号</div>
-        <div class="hint-text" style="margin:-4px 2px 6px;">上传背景图之后,用这几个滑杆把正文挪到背景的空白处,拖动时右边实时预览。</div>
+        <div class="hint-text" style="margin:-4px 2px 6px;">上传背景图之后,用这几个滑杆把正文挪到背景的空白处,拖动时下面实时预览。</div>
+        <div id="typoPreviewBox" style="background:var(--surface-2); border:1px solid var(--border); border-radius:8px; padding:12px; margin:8px 0; max-height:200px; overflow-y:auto; font-size:13px; line-height:1.6; color:var(--ink);">
+          预览: 这是阅读文本的位置演示。拖动下面的滑杆改变位置和字号,这里会实时更新显示效果。
+        </div>
         <label class="slider-row"><span>上下</span><input type="range" id="tOffsetY" min="-120" max="120" step="2" value="${rs.textOffsetY|0}"><b id="tOffsetYVal">${rs.textOffsetY|0}</b></label>
         <label class="slider-row"><span>左右</span><input type="range" id="tOffsetX" min="-80" max="80" step="2" value="${rs.textOffsetX|0}"><b id="tOffsetXVal">${rs.textOffsetX|0}</b></label>
         <label class="slider-row"><span>字号</span><input type="range" id="tFontScale" min="70" max="180" step="2" value="${rs.fontScale||100}"><b id="tFontScaleVal">${rs.fontScale||100}%</b></label>
@@ -4507,6 +4510,28 @@ async function openReaderSettingsSheet(story, onSaved){
   function previewTypo(){
     const ifr = document.querySelector('#readerIframe');
     if(ifr && ifr.contentWindow) ifr.contentWindow.postMessage({ mmTypography: typo }, '*');
+    const previewBox = overlay.querySelector('#typoPreviewBox');
+    if(previewBox){
+      previewBox.style.transform = `translate(${typo.textOffsetX}px, ${typo.textOffsetY}px)`;
+      previewBox.style.fontSize = (typo.fontScale / 100) + 'em';
+      if(typo.ruleStyle !== 'none'){
+        let bg = '';
+        if(typo.ruleStyle === 'solid'){
+          bg = `repeating-linear-gradient(to bottom, transparent 0, transparent ${typo.ruleGap-1}px, currentColor 0, currentColor 1px)`;
+        } else if(typo.ruleStyle === 'dashed'){
+          bg = `repeating-linear-gradient(to bottom, transparent 0, transparent ${typo.ruleGap-2}px, currentColor ${typo.ruleGap-1}px, currentColor ${typo.ruleGap}px)`;
+        } else if(typo.ruleStyle === 'grid'){
+          bg = `linear-gradient(0deg, transparent calc(${typo.ruleGap}px - 1px), currentColor calc(${typo.ruleGap}px - 1px)), linear-gradient(90deg, transparent calc(50% - 0.5px), currentColor calc(50% - 0.5px), currentColor calc(50% + 0.5px), transparent calc(50% + 0.5px))`;
+        }
+        previewBox.style.backgroundImage = bg;
+        previewBox.style.backgroundRepeat = 'repeat';
+        previewBox.style.backgroundPosition = `0 ${typo.ruleOffset}px`;
+        previewBox.style.opacity = '0.9';
+      } else {
+        previewBox.style.backgroundImage = 'none';
+        previewBox.style.opacity = '1';
+      }
+    }
   }
   if(!isHtmlStory(story)){
     const sliders = [
@@ -4520,6 +4545,8 @@ async function openReaderSettingsSheet(story, onSaved){
       overlay.querySelector(sel).value = typo[key];
       overlay.querySelector(valSel).textContent = fmt(typo[key]);
     });
+    paintSliders();
+    previewTypo();
     sliders.forEach(([sel,valSel,key,fmt])=>{
       overlay.querySelector(sel).addEventListener('input', (e)=>{
         typo[key] = parseInt(e.target.value, 10);
@@ -4548,16 +4575,22 @@ async function openReaderSettingsSheet(story, onSaved){
   function paintSwatches(){
     swatchRow.innerHTML = presets.map(p=>`
       <div class="bg-swatch ${chosenBg===p.value?'selected':''}" data-bg="${escapeAttr(p.value)}" style="background:${p.value||'var(--surface-2)'};" title="${p.name}"></div>
-    `).join('') + `<label class="bg-upload-swatch" id="bgUploadSwatch">+<input type="file" accept="image/*" id="bgUploadInput" style="display:none;"></label>`;
+    `).join('') + `<label class="bg-upload-swatch" id="bgUploadSwatch" for="bgUploadInput">+<input type="file" accept="image/*" id="bgUploadInput" style="display:none;"></label>`;
     swatchRow.querySelectorAll('[data-bg]').forEach(sw=>{
       sw.addEventListener('click', ()=>{ chosenBg = sw.dataset.bg; paintSwatches(); });
     });
     swatchRow.querySelector('#bgUploadInput').addEventListener('change', (e)=>{
       const f = e.target.files[0]; if(!f) return;
       const rd = new FileReader();
-      rd.onload = ()=>{ chosenBg = `url(${rd.result}) center/cover no-repeat`; paintSwatches(); };
+      rd.onload = ()=>{ chosenBg = `url(${rd.result}) center/cover no-repeat`; paintSwatches(); previewBg(); };
       rd.readAsDataURL(f);
     });
+  }
+  function previewBg(){
+    const ifr = document.querySelector('#readerIframe');
+    if(ifr && ifr.contentWindow && ifr.contentWindow.style){
+      ifr.contentWindow.document.body.style.background = chosenBg || 'var(--surface-2)';
+    }
   }
   paintSwatches();
 
