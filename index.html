@@ -994,6 +994,225 @@ function closeModal(overlay){
   setTimeout(()=> overlay.remove(), 200);
 }
 
+/* ================= Importing a book (txt / epub) =================
+   Turns a file into a story with one episode per chapter, so an ordinary book
+   can be read here like anything else. */
+
+/* Chapter headings people actually use, in order of how strong a signal they
+   are. Only one pattern is used per file — the first that splits it into a
+   believable number of chapters — because mixing them shreds the text. */
+const TXT_CHAPTER_PATTERNS = [
+  /^[ \t]*第[零一二三四五六七八九十百千两0-9]+[章回卷节][ \t]*.*$/gm,
+  /^[ \t]*(?:Chapter|CHAPTER)[ \t]+[0-9IVXLC]+[ \t]*.*$/gm,
+  /^[ \t]*[0-9]{1,4}[、.．][ \t]*\S.*$/gm
+];
+function splitTxtChapters(text){
+  const clean = String(text).replace(/\r\n?/g, '\n').replace(/　/g, ' ');
+  for(const re of TXT_CHAPTER_PATTERNS){
+    re.lastIndex = 0;
+    const hits = [...clean.matchAll(re)];
+    // One or two matches is more likely a stray line than a chaptered book.
+    if(hits.length < 3) continue;
+    const out = [];
+    hits.forEach((h, i)=>{
+      const start = h.index;
+      const end = i + 1 < hits.length ? hits[i+1].index : clean.length;
+      const title = h[0].trim();
+      const body = clean.slice(start + h[0].length, end).trim();
+      if(body) out.push({ title, content: body });
+    });
+    if(out.length >= 3){
+      const head = clean.slice(0, hits[0].index).trim();
+      if(head) out.unshift({ title:'开头', content: head });
+      return out;
+    }
+  }
+  return [{ title:'正文', content: clean.trim() }];
+}
+
+/* Strips markup to readable paragraphs. The reader renders blank-line-separated
+   blocks as <p>, so that is what this produces. */
+function htmlToPlainText(html){
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  doc.querySelectorAll('script,style,head').forEach(el=>el.remove());
+  const blocks = [];
+  const walk = (node)=>{
+    node.childNodes.forEach(ch=>{
+      if(ch.nodeType === 3){
+        const t = ch.textContent.replace(/\s+/g, ' ').trim();
+        if(t) blocks[blocks.length-1] = (blocks[blocks.length-1] || '') + t;
+        return;
+      }
+      if(ch.nodeType !== 1) return;
+      const tag = ch.tagName.toLowerCase();
+      if(tag === 'br'){ blocks.push(''); return; }
+      const isBlock = /^(p|div|h[1-6]|li|blockquote|section|article|tr|pre)$/.test(tag);
+      if(isBlock) blocks.push('');
+      walk(ch);
+      if(isBlock) blocks.push('');
+    });
+  };
+  walk(doc.body || doc);
+  return blocks.map(b=>b.trim()).filter(Boolean).join('\n\n');
+}
+
+async function parseEpub(file){
+  if(typeof JSZip === 'undefined') throw new Error('JSZip 没加载,无法解析 epub');
+  const zip = await JSZip.loadAsync(file);
+  const readText = async (path)=>{
+    const f = zip.file(path.replace(/^\//, ''));
+    return f ? await f.async('string') : null;
+  };
+  const parseXml = (str)=> new DOMParser().parseFromString(str, 'application/xml');
+
+  const containerXml = await readText('META-INF/container.xml');
+  if(!containerXml) throw new Error('这不是标准的 epub(缺 container.xml)');
+  const opfPath = parseXml(containerXml).querySelector('rootfile')?.getAttribute('full-path');
+  if(!opfPath) throw new Error('epub 里找不到内容清单');
+  const opfDir = opfPath.includes('/') ? opfPath.slice(0, opfPath.lastIndexOf('/') + 1) : '';
+  const opf = parseXml(await readText(opfPath));
+
+  const title = opf.querySelector('metadata > title, title')?.textContent?.trim() || '';
+  const author = opf.querySelector('metadata > creator, creator')?.textContent?.trim() || '';
+
+  // href is relative to the OPF, and may be url-encoded in the zip listing.
+  const resolve = (href)=> decodeURIComponent(opfDir + href).replace(/[^/]+\/\.\.\//g, '');
+  const manifest = {};
+  opf.querySelectorAll('manifest > item').forEach(it=>{
+    manifest[it.getAttribute('id')] = {
+      href: resolve(it.getAttribute('href') || ''),
+      type: it.getAttribute('media-type') || ''
+    };
+  });
+
+  /* The table of contents gives the human chapter names; the spine gives the
+     real reading order. Use the spine for order and the TOC only for titles. */
+  const titleByHref = {};
+  const navId = Object.keys(manifest).find(id=>/nav/i.test(id)) ||
+                Object.keys(manifest).find(id=>manifest[id].type === 'application/xhtml+xml' && /nav/i.test(manifest[id].href));
+  const ncxId = Object.keys(manifest).find(id=>manifest[id].type === 'application/x-dtbncx+xml');
+  if(ncxId){
+    const ncx = parseXml(await readText(manifest[ncxId].href) || '<x/>');
+    ncx.querySelectorAll('navPoint').forEach(np=>{
+      const src = np.querySelector('content')?.getAttribute('src') || '';
+      const label = np.querySelector('navLabel > text')?.textContent?.trim() || '';
+      if(src && label) titleByHref[resolve(src).split('#')[0]] = label;
+    });
+  } else if(navId){
+    const nav = new DOMParser().parseFromString(await readText(manifest[navId].href) || '', 'text/html');
+    nav.querySelectorAll('nav a').forEach(a=>{
+      const href = a.getAttribute('href') || '';
+      const label = a.textContent.trim();
+      if(href && label) titleByHref[resolve(href).split('#')[0]] = label;
+    });
+  }
+
+  const chapters = [];
+  const spine = [...opf.querySelectorAll('spine > itemref')];
+  for(const ref of spine){
+    const item = manifest[ref.getAttribute('idref')];
+    if(!item || !/xhtml|html/.test(item.type)) continue;
+    const raw = await readText(item.href);
+    if(!raw) continue;
+    const text = htmlToPlainText(raw);
+    if(!text || text.length < 20) continue;      // covers, blank pages
+    const docTitle = (()=>{
+      const d = new DOMParser().parseFromString(raw, 'text/html');
+      return (d.querySelector('h1,h2,h3')?.textContent || d.querySelector('title')?.textContent || '').trim();
+    })();
+    const chTitle = titleByHref[item.href] || docTitle || ('第' + (chapters.length + 1) + '章');
+    // The heading is already the episode's title; leaving it as the first
+    // paragraph too prints it twice on the page.
+    let body = text;
+    const firstBreak = body.indexOf('\n\n');
+    const firstPara = (firstBreak === -1 ? body : body.slice(0, firstBreak)).trim();
+    if(firstPara && firstPara === chTitle.trim()){
+      body = firstBreak === -1 ? '' : body.slice(firstBreak + 2).trim();
+    }
+    chapters.push({ title: chTitle, content: body || text });
+  }
+  if(!chapters.length) throw new Error('epub 里没找到可读的正文');
+  return { title, author, chapters };
+}
+
+async function parseBookFile(file){
+  const name = (file.name || '').toLowerCase();
+  const base = (file.name || '未命名').replace(/\.[^.]+$/, '');
+  if(name.endsWith('.epub')){
+    const r = await parseEpub(file);
+    return { title: r.title || base, author: r.author, chapters: r.chapters };
+  }
+  const text = await file.text();
+  return { title: base, author: '', chapters: splitTxtChapters(text) };
+}
+
+function openImportBookFlow(){
+  const overlay = openModal(`
+    <div class="modal-header"><h2>导入书籍</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+    <div class="modal-body">
+      <label class="btn primary block" style="cursor:pointer; text-align:center;">
+        选择 txt / epub 文件
+        <input type="file" id="bookFileInput" accept=".txt,.epub" style="display:none;">
+      </label>
+      <div class="hint-text" style="margin-top:8px;">epub 按书里的目录分章;txt 会认「第N章」这类标题,认不出来就整篇当一章。</div>
+      <div id="bookImportStatus" class="hint-text" style="margin-top:10px;"></div>
+      <div id="bookImportForm" hidden>
+        <label class="field-label">书名</label>
+        <input type="text" id="bookTitle">
+        <label class="field-label">分类(可选)</label>
+        <input type="text" id="bookCategory" placeholder="例如: 外面看的书">
+        <div id="bookChapterPreview" class="hint-text" style="margin-top:10px;"></div>
+        <div class="btn-row"><button class="btn primary block" id="bookImportBtn">导入书架</button></div>
+      </div>
+    </div>
+  `);
+  overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
+  const status = overlay.querySelector('#bookImportStatus');
+  const form = overlay.querySelector('#bookImportForm');
+  let parsed = null;
+
+  overlay.querySelector('#bookFileInput').addEventListener('change', async (e)=>{
+    const f = e.target.files[0]; if(!f) return;
+    status.textContent = '正在解析…';
+    form.hidden = true;
+    try{
+      parsed = await parseBookFile(f);
+      overlay.querySelector('#bookTitle').value = parsed.title || '';
+      const names = parsed.chapters.slice(0, 6).map(c=>c.title).join(' / ');
+      const chars = parsed.chapters.reduce((n,c)=>n + c.content.length, 0);
+      overlay.querySelector('#bookChapterPreview').textContent =
+        `共 ${parsed.chapters.length} 章,约 ${Math.round(chars/1000)} 千字。前几章:${names}${parsed.chapters.length>6?' …':''}`;
+      status.textContent = parsed.author ? ('作者:' + parsed.author) : '';
+      form.hidden = false;
+    }catch(err){
+      parsed = null;
+      status.textContent = '解析失败:' + (err && err.message ? err.message : err);
+    }
+  });
+
+  overlay.querySelector('#bookImportBtn').addEventListener('click', async ()=>{
+    if(!parsed) return;
+    const now = Date.now();
+    const story = makeStory({
+      kind: 'text',
+      title: overlay.querySelector('#bookTitle').value.trim() || parsed.title || '未命名',
+      category: overlay.querySelector('#bookCategory').value.trim(),
+      background: parsed.author ? ('作者:' + parsed.author) : '',
+      episodes: parsed.chapters.map((c, i)=>({
+        id: uid(), title: c.title || ('第' + (i+1) + '章'), type: 'chapter',
+        prompt: '', content: c.content, order: i, createdAt: now + i
+      })),
+      createdAt: now, updatedAt: now
+    });
+    await dbPut('stories', story);
+    closeModal(overlay);
+    showToast('已导入《' + story.title + '》');
+    await refreshShelf();
+    openStoryDetail(story.id);
+  });
+  return overlay;
+}
+
 /* ================= FAB: new book / import chapter ================= */
 function initFab(){
   document.getElementById('fabBtn').addEventListener('click', ()=>{
@@ -1012,6 +1231,10 @@ function initFab(){
           <div class="glyph">${ICONS.paw}</div>
           <div class="txt"><div class="t1">新建角色</div><div class="t2">角色独立于故事,可跨故事复用</div></div>
         </div>
+        <div class="action-sheet-item" id="actImportBook">
+          <div class="glyph">${ICONS.book}</div>
+          <div class="txt"><div class="t1">导入书籍(txt / epub)</div><div class="t2">整本直接进书架,按章分好</div></div>
+        </div>
         <div class="action-sheet-item" id="actImportChapter">
           <div class="glyph">${ICONS.download}</div>
           <div class="txt"><div class="t1">导入章节 / 番外</div><div class="t2">添加到已有的故事里</div></div>
@@ -1026,6 +1249,7 @@ function initFab(){
     overlay.querySelector('#actNewBook').addEventListener('click', ()=>{ closeModal(overlay); openStoryWizard(); });
     overlay.querySelector('#actNewInstruction').addEventListener('click', ()=>{ closeModal(overlay); openInstructionEditor(null); });
     overlay.querySelector('#actNewCharacter').addEventListener('click', ()=>{ closeModal(overlay); openCharacterEditor(null); });
+    overlay.querySelector('#actImportBook').addEventListener('click', ()=>{ closeModal(overlay); openImportBookFlow(); });
     overlay.querySelector('#actImportChapter').addEventListener('click', ()=>{ closeModal(overlay); openImportChapterFlow(); });
     overlay.querySelector('#actNewHtml').addEventListener('click', ()=>{ closeModal(overlay); openStoryWizard({ kind:'html' }); });
   });
