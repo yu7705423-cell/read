@@ -750,7 +750,7 @@ function makeReaderSettings(over){
     voicePresetId:'', summaryPresetId:'', annotatePresetId:'',
     narrationMode:'tts', narrationPresetId:'', narrationVoiceId:'', systemVoiceURI:'', systemRate:1,
     textOffsetX:0, textOffsetY:0, fontScale:100, textWidth:100, textHeight:100, textColor:'',
-    ruleStyle:'none', ruleGap:34, ruleOffset:0
+    ruleStyle:'none', ruleGap:34, ruleOffset:0, ruleAuto:true
   }, over || {});
 }
 function makeEpisode(over){
@@ -3810,7 +3810,8 @@ function buildReaderDoc(entry, story, insets, restore){
     fontScale: rs.fontScale || 100, textWidth: rs.textWidth || 100,
     textHeight: rs.textHeight || 100,
     textColor: rs.textColor || '',
-    ruleStyle: rs.ruleStyle || 'none', ruleGap: rs.ruleGap || 34, ruleOffset: rs.ruleOffset|0
+    ruleStyle: rs.ruleStyle || 'none', ruleGap: rs.ruleGap || 34, ruleOffset: rs.ruleOffset|0,
+    ruleAuto: rs.ruleAuto !== false
   };
 
   /* The reader chrome (topbar / page nav) floats above the iframe, so the
@@ -3903,8 +3904,19 @@ function buildReaderDoc(entry, story, insets, restore){
     var RULE_COLOR = ${JSON.stringify(t.inkSoft || '#999')};
     var THEME_INK = ${JSON.stringify(t.ink)};
     function setVar(k,v){ document.documentElement.style.setProperty(k, v); }
+    /* The line has to sit under a line of text, so its spacing must be the
+       text's own line height — a fixed pixel gap drifts out of step within a
+       few lines and can never be aligned by hand. Measured live, so it follows
+       the font size and any custom CSS that changes line-height. */
+    function lineHeightPx(){
+      var lh = parseFloat(getComputedStyle(document.body).lineHeight);
+      if(lh > 0) return lh;
+      var fs = parseFloat(getComputedStyle(document.body).fontSize) || 16.5;
+      return fs * 1.95;
+    }
     function ruleBackground(t){
-      var gap = Math.max(12, t.ruleGap || 34);
+      var gap = t.ruleAuto === false ? Math.max(12, t.ruleGap || 34)
+                                     : Math.max(12, lineHeightPx());
       if(t.ruleStyle === 'solid'){
         return 'repeating-linear-gradient(180deg, transparent 0, transparent ' + (gap-1) +
                'px, ' + RULE_COLOR + ' ' + (gap-1) + 'px, ' + RULE_COLOR + ' ' + gap + 'px)';
@@ -3936,6 +3948,9 @@ function buildReaderDoc(entry, story, insets, restore){
       var pages = document.getElementById('pages');
       if(pages){
         pages.style.backgroundImage = ruleBackground(t);
+        // content-box: the pattern starts where the text starts, so the first
+        // line already lands on the first rule whatever the top padding is.
+        pages.style.backgroundOrigin = 'content-box';
         pages.style.backgroundPosition = '0 ' + (t.ruleOffset|0) + 'px';
       }
     }
@@ -4520,7 +4535,7 @@ const BG_PRESETS = [
 /* An appearance preset is exactly these fields — everything that decides how a
    page looks, and nothing about voices or AI, which are not appearance. */
 const APPEARANCE_KEYS = ['background','textColor','fontUrl','customCss','pageEffect','showPageNav',
-  'textOffsetX','textOffsetY','textWidth','textHeight','fontScale','ruleStyle','ruleGap','ruleOffset'];
+  'textOffsetX','textOffsetY','textWidth','textHeight','fontScale','ruleStyle','ruleGap','ruleOffset','ruleAuto'];
 function pickAppearance(rs){
   const out = {};
   APPEARANCE_KEYS.forEach(k=>{ if(rs[k] !== undefined) out[k] = rs[k]; });
@@ -4529,7 +4544,8 @@ function pickAppearance(rs){
 
 /* The shape "no typography customisation at all". */
 const TYPO_RESET = { textOffsetX:0, textOffsetY:0, fontScale:100, textWidth:100,
-                     textHeight:100, textColor:'', ruleStyle:'none', ruleGap:34, ruleOffset:0 };
+                     textHeight:100, textColor:'', ruleStyle:'none', ruleGap:34,
+                     ruleOffset:0, ruleAuto:true };
 
 /* Text colour is one control in two places, so the markup and the wiring live
    here rather than being written out twice. */
@@ -4615,8 +4631,10 @@ function openAppearanceStudio(opts){
           <button class="choice-chip" data-rule="grid">方格</button>
         </div>
         <div id="bgaRuleTune">
-          <label class="slider-row"><span>线间距</span><input type="range" id="bgaRuleGap" min="18" max="70" step="1" value="${typo.ruleGap||34}"><b id="bgaRuleGapVal">${typo.ruleGap||34}</b></label>
-          <label class="slider-row"><span>位置微调</span><input type="range" id="bgaRuleOffset" min="-40" max="40" step="1" value="${typo.ruleOffset|0}"><b id="bgaRuleOffsetVal">${typo.ruleOffset|0}</b></label>
+          <label class="switch-row"><span>跟着行高走(每行一条)</span>
+            <input type="checkbox" id="bgaRuleAuto" ${typo.ruleAuto === false ? '' : 'checked'}></label>
+          <label class="slider-row" id="bgaRuleGapRow"><span>线间距</span><input type="range" id="bgaRuleGap" min="18" max="70" step="1" value="${typo.ruleGap||34}"><b id="bgaRuleGapVal">${typo.ruleGap||34}</b></label>
+          <label class="slider-row"><span>离字的距离</span><input type="range" id="bgaRuleOffset" min="-40" max="40" step="1" value="${typo.ruleOffset|0}"><b id="bgaRuleOffsetVal">${typo.ruleOffset|0}</b></label>
         </div>
       </div>
 
@@ -4774,10 +4792,19 @@ function openAppearanceStudio(opts){
 
   /* ---- rules ---- */
   const ruleTune = overlay.querySelector('#bgaRuleTune');
+  const ruleAutoChk = overlay.querySelector('#bgaRuleAuto');
   function paintRules(){
     overlay.querySelectorAll('[data-rule]').forEach(b=>b.classList.toggle('selected', b.dataset.rule === typo.ruleStyle));
     ruleTune.style.display = typo.ruleStyle === 'none' ? 'none' : '';
+    ruleAutoChk.checked = typo.ruleAuto !== false;
+    // Spacing is the line height when following it; the manual slider would
+    // only be a lie sitting there.
+    overlay.querySelector('#bgaRuleGapRow').style.display = typo.ruleAuto === false ? '' : 'none';
   }
+  ruleAutoChk.addEventListener('change', ()=>{
+    typo.ruleAuto = ruleAutoChk.checked;
+    paintRules(); pushTypo();
+  });
   overlay.querySelectorAll('[data-rule]').forEach(b=>{
     b.addEventListener('click', ()=>{ typo.ruleStyle = b.dataset.rule; paintRules(); pushTypo(); });
   });
@@ -4921,8 +4948,10 @@ async function openReaderSettingsSheet(story, onSaved, previewEntry){
           <button class="choice-chip" data-rule="grid">方格</button>
         </div>
         <div id="ruleTuning">
-          <label class="slider-row"><span>线间距</span><input type="range" id="tRuleGap" min="18" max="70" step="1" value="${rs.ruleGap||34}"><b id="tRuleGapVal">${rs.ruleGap||34}</b></label>
-          <label class="slider-row"><span>位置微调</span><input type="range" id="tRuleOffset" min="-40" max="40" step="1" value="${rs.ruleOffset|0}"><b id="tRuleOffsetVal">${rs.ruleOffset|0}</b></label>
+          <label class="switch-row"><span>跟着行高走(每行一条)</span>
+            <input type="checkbox" id="tRuleAuto" ${rs.ruleAuto === false ? '' : 'checked'}></label>
+          <label class="slider-row" id="tRuleGapRow"><span>线间距</span><input type="range" id="tRuleGap" min="18" max="70" step="1" value="${rs.ruleGap||34}"><b id="tRuleGapVal">${rs.ruleGap||34}</b></label>
+          <label class="slider-row"><span>离字的距离</span><input type="range" id="tRuleOffset" min="-40" max="40" step="1" value="${rs.ruleOffset|0}"><b id="tRuleOffsetVal">${rs.ruleOffset|0}</b></label>
         </div>
         <div class="btn-row"><button class="btn sm" id="resetTypoBtn">恢复默认排版</button></div>
       `}
@@ -4974,7 +5003,8 @@ async function openReaderSettingsSheet(story, onSaved, previewEntry){
     fontScale: rs.fontScale || 100, textWidth: rs.textWidth || 100,
     textHeight: rs.textHeight || 100,
     textColor: rs.textColor || '',
-    ruleStyle: rs.ruleStyle || 'none', ruleGap: rs.ruleGap || 34, ruleOffset: rs.ruleOffset|0
+    ruleStyle: rs.ruleStyle || 'none', ruleGap: rs.ruleGap || 34, ruleOffset: rs.ruleOffset|0,
+    ruleAuto: rs.ruleAuto !== false
   };
   const TYPO_DEFAULTS = TYPO_RESET;
   function previewTypo(){
@@ -5026,10 +5056,16 @@ async function openReaderSettingsSheet(story, onSaved, previewEntry){
       });
     });
     const ruleTuning = overlay.querySelector('#ruleTuning');
+    const ruleAutoChk = overlay.querySelector('#tRuleAuto');
     function paintRuleChips(){
       overlay.querySelectorAll('[data-rule]').forEach(b=>b.classList.toggle('selected', b.dataset.rule === typo.ruleStyle));
       ruleTuning.style.display = typo.ruleStyle === 'none' ? 'none' : '';
+      ruleAutoChk.checked = typo.ruleAuto !== false;
+      overlay.querySelector('#tRuleGapRow').style.display = typo.ruleAuto === false ? '' : 'none';
     }
+    ruleAutoChk.addEventListener('change', ()=>{
+      typo.ruleAuto = ruleAutoChk.checked; paintRuleChips(); previewTypo();
+    });
     overlay.querySelectorAll('[data-rule]').forEach(b=>{
       b.addEventListener('click', ()=>{ typo.ruleStyle = b.dataset.rule; paintRuleChips(); previewTypo(); });
     });
@@ -5134,6 +5170,7 @@ async function openReaderSettingsSheet(story, onSaved, previewEntry){
       textOffsetX: typo.textOffsetX, textOffsetY: typo.textOffsetY, fontScale: typo.fontScale,
       textWidth: typo.textWidth, textHeight: typo.textHeight, textColor: typo.textColor,
       ruleStyle: typo.ruleStyle, ruleGap: typo.ruleGap, ruleOffset: typo.ruleOffset,
+      ruleAuto: typo.ruleAuto,
       customCss: overlay.querySelector('#customCssInputR').value,
       fontUrl: overlay.querySelector('#fontUrlInput').value.trim(),
       voicePresetId: (overlay.querySelector('#voicePresetSelect')||{}).value || '',
@@ -5208,13 +5245,12 @@ function openReaderPage(parentOverlay, story, entryId){
     topbar.classList.toggle('collapsed', state);
     peek.classList.toggle('show', state);
     if(pagenav.style.display !== 'none') pagenav.classList.toggle('collapsed', state);
-    // Tell the document its usable box changed instead of re-rendering it:
-    // re-rendering would restart embedded widgets and lose the position, and
-    // the document re-runs its own layout so nothing gets mis-measured.
-    const ifr = reader.querySelector('#readerIframe');
-    if(ifr && ifr.contentWindow && !isHtmlStory(story)){
-      ifr.contentWindow.postMessage({ mmInsets: chromeInsets() }, '*');
-    }
+    /* The text box deliberately does NOT change when the chrome hides. People
+       line the text up against a background picture with the bars showing; if
+       collapsing them reclaimed that space, the whole block would slide up and
+       the alignment they just built would be gone. Hiding the bars hides the
+       bars — it does not re-typeset the page. It also keeps the page count and
+       the reading position stable across a toggle. */
   }
   reader.querySelector('[data-r-collapse]').addEventListener('click', ()=>setImmersive(true));
   peek.addEventListener('click', ()=>setImmersive(false));
