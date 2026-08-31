@@ -4,112 +4,152 @@
 
 一个纯前端、单文件 HTML 的"伪阅读器"应用,用来存放 AIRP(AI角色扮演)过程中 user 和 char 之间产生的番外剧情、长篇小说,并附带一些配套工具(搜索、文件解析导入、语音朗读、AI总结前文)。
 
-- **无后端**,所有数据存在浏览器的 **IndexedDB** 里(数据库名 `meowReaderDB`,四个 object store:`characters`、`books`、`materials`、`presets`)
+- **无后端**,所有数据存在浏览器的 **IndexedDB** 里(数据库名 `meowReaderDB`,DB_VERSION = 2,详见下面的数据结构)
 - **无构建流程**,纯 vanilla JS + 原生 HTML/CSS,一个 `.html` 文件打开就能用
 - 引用了三个 CDN 库(写死在 `<head>` 里):
   - `JSZip 3.10.1` — 解压/生成 zip
   - `mammoth 1.6.0`(browser 版)— 解析 docx 提取文本
   - `pako 2.1.0` — 解压 gzip(给 tar.gz 用)
-- 当前文件体积约 115KB,全部逻辑都在一个 `<script>` 标签里
+- 当前文件体积约 244KB,全部逻辑都在一个 `<script>` 标签里
 
 仓库里的文件是 `index.html`(通过 GitHub Pages 直接访问)。
 
 ---
 
-## 原始需求 vs 完成情况
+## 需求完成情况
 
-用户最初的需求(按对话原文整理),逐条标注完成度:
+### 最初的需求(V0)
 
 | 需求 | 状态 |
 |---|---|
-| 简约整体风格 | ✅ 已实现,自定义配色变量,非模板化视觉 |
-| 四个Tab:书架/搜索/工具/设置 | ✅ |
-| 内置明暗主题 + 自定义CSS导入 | ✅ 设置页里,粘贴CSS或传.css文件 |
-| 书架加号:新建书籍 / 导入章节 | ✅ |
-| 新建书籍:配置char/user姓名(留存)、封面、番外页/长篇选择、自定义标签、自定义分类 | ✅ |
-| 支持多个char和多个user(不止一对一) | ✅ participants数组,每个含characterId+role |
-| 已有char/user可复用,也可新建(放在"作者"概念下) | ✅ 角色库独立于书籍,可跨书复用 |
-| 番外页 = 多条独立剧情;长篇 = 背景+多章节 | ✅ |
-| 番外结构应为:番外要求(生成指令/主题) → 标题 → 正文 | ✅ 后期修正加上了`prompt`字段 |
-| 番外/长篇中可能嵌入HTML/CSS,要能正常显示和点击 | ✅ sandboxed iframe渲染,支持整段是HTML或大段文字中夹小HTML块 |
-| 搜索:关键字/章节名/角色名/番外剧情 + 分类(自定义/角色/番外剧情/标签) | ✅ |
-| 工具:导入txt/解析zip/rar,一键复制 | ⚠️ txt/docx/zip/tar/tar.gz 都做了,**RAR 没做**(见下方说明) |
-| ZIP要能解到嵌套最深层 | ✅ 递归解包,zip里套zip无限层都会挖到底 |
-| 素材库要单独分类,不进书架体系 | ✅ 完全独立的 `materials` store |
-| 素材库分文件夹 | ✅ 导入时选/建文件夹,单条素材可改归属文件夹 |
-| 素材库支持多选批量复制/导出 | ✅ 多选模式,复制拼接文本 / 导出打包zip |
-| 素材库支持直接手写文字新建 | ✅ 右上角"+"按钮 |
-| 每本书自定义背景/翻页效果/注入CSS/自定义字体URL | ✅ |
-| 翻页效果可选:竖屏滑动 或 左右翻页 | ✅ 已修复并实测通过(见下方"翻页模式") |
-| 语音朗读配置(自填接口)、保存预设、绑定角色 | ✅ 预设增删改 + 实际调用出声音都已接通 |
-| 一键复制(背景+前文)方便去续写 | ✅ 支持选择是否带上番外要求/背景 |
-| 配置API总结前文(可自定义prompt) | ✅ 预设增删改 + 实际调用生成总结都已接通 |
-| 朗读也可注入语音prompt让角色读更好 | ✅ `promptInjection` 会以 `{{prompt}}` 占位符注入请求体 |
-| 整体设置可导出导入,便于分享 | ✅ 一键导出/导入全部数据的JSON |
-| 全站不用emoji,改用SVG图标 | ✅ 用户中途明确要求后已经全部替换,已存入用户记忆偏好 |
+| 简约风格 / 四个Tab / 明暗主题 + 自定义CSS | ✅ |
+| 多个 char 和多个 user、角色可跨故事复用 | ✅ |
+| 番外 = 要求 → 标题 → 正文;长篇 = 背景 + 章节 | ✅ 现在统一为 Story + Episode(type 区分) |
+| 正文里嵌 HTML/CSS 要能显示和点击 | ✅ sandboxed iframe |
+| 搜索:关键字 / 章节名 / 角色名 / 番外 + 分类筛选 | ✅ |
+| 工具:txt/docx/zip/tar/tar.gz 解析,递归解到最深层 | ✅ |
+| 素材库独立分类、分文件夹、多选批量复制/导出、手写新建 | ✅ |
+| 每本书自定义背景 / 翻页 / 注入CSS / 字体URL | ✅ |
+| 一键复制(背景+前文)方便续写 | ✅ 可用前情提要代替前文 |
+| 整体设置可导出导入 | ✅ |
+| 全站不用 emoji,改用 SVG 图标 | ✅ |
+| 工具:RAR 解压 | ❌ 纯前端无可靠方案,已确认放弃 |
 
----
+### 规格 V1
+
+| 章节 | 需求 | 状态 |
+|---|---|---|
+| 二 | 角色 / 指令 / 故事 / 篇章 四层关系,两种查看方式 | ✅ |
+| 三、四 | HTML夹独立分类,**完全隔离**(禁止拼进同一 DOM) | ✅ |
+| 五 | 普通文字独立阅读器 | ✅ |
+| 六 | 滚动 / 翻页严格限制在正文区 | ✅ |
+| 七 | 沉浸式真全屏,不靠漏出的箭头展开 | ✅ |
+| 八 | 背景上调正文位置 / 大小,阅读辅助线 | ✅ 横线 / 虚线 / 方格 |
+| 九 | TTS 多 API 预设,拉取真实模型列表 | ✅ 含重拉 / 测试 / 快捷配置 |
+| 十 | 手动选择朗读内容(长按),暂停 / 继续 / 停止 | ✅ |
+| 十一 | 规则识别旁白 / 角色对白 | ✅ |
+| 十二 | 角色声音绑定,与故事解耦 | ✅ |
+| 十三 | 旁白三模式:TTS / 系统语音 / 不朗读 | ✅ |
+| 十四、十五 | AI 文本标注 + 独立 API + Prompt 可编辑 + **降级** | ✅ |
+| 十六、十七 | (规格中缺失) | — |
+| 十八~二十 | 核心对象结构与架构原则 | ✅ 见下 |
+| 一、二十.6 | 音乐播放 / 网易云 Provider | ❌ 规格无正文,已确认不做 |
 
 ## 数据结构
 
-### `characters`(角色库,可被任意书复用)
-```js
-{ id, name, roleDefault: 'char'|'user', avatar, note, createdAt }
+数据库 `meowReaderDB`,**DB_VERSION = 2**。store:`characters` `instructions` `stories` `htmlDocs(未用,HTML走stories)` `materials` `presets` `voiceBindings` `settings`,外加 v1 遗留的 `books`。
+
+### 四层关系(整个系统最重要的部分)
+
+"指令"不是故事,也不是角色之间的关系,而是**多个角色共用的一个归类维度**。同一个《雨天见面》可以被角色A/B/C/D 各跑一遍,产出的四个故事**彼此完全独立、内容互不相干**:
+
+```
+Instruction(共同的指令 / 主题 / 系列)
+     ├── Story ──> Character A     ← 各自独立
+     ├── Story ──> Character B
+     ├── Story ──> Character C
+     └── Story ──> Character D
 ```
 
-### `books`(书架条目)
+- 一个 Instruction 对应很多 Story;一个 Character 拥有很多 Story
+- 一个 Story 对应一个具体角色,Story 之间彼此独立
+- 四者**只靠 id 关联**,谁也不持有对方的副本
+
+### `characters`
+```js
+{ id, name, roleDefault:'char'|'user', avatar, note, createdAt }
+```
+
+### `instructions`
+```js
+{ id, title, prompt, note, tags:[], createdAt, updatedAt }
+```
+
+### `stories`
 ```js
 {
-  id, title, cover, type: 'extra'|'novel',
-  tags: [], category: '',
-  participants: [{ characterId, name, avatar, role: 'char'|'user' }], // 支持多个
-  createdAt, updatedAt,
-
-  // type==='extra' 时:
-  episodes: [{ id, title, prompt, content, createdAt }],
-  // prompt = 番外要求/生成指令,content = 正文
-
-  // type==='novel' 时:
-  background: '',
-  chapters: [{ id, title, content, order, createdAt }],
-
-  readerSettings: {
-    background: '',       // CSS背景值,或 `url(dataURL) center/cover no-repeat`
-    pageEffect: 'scroll'|'paginate'|'fade'|'vertical'|'flip'|'instant',
-    showPageNav: true,     // 分页样式下是否显示底部页码条,关掉就靠手势/点击/键盘
-    customCss: '',
-    fontUrl: '',           // 例如 Google Fonts 的 css2 链接
-    voicePresetId: '',     // 关联到 presets 里 kind:'voice' 的记录(阅读设置里选)
-    summaryPresetId: ''    // 关联到 presets 里 kind:'summary' 的记录(仅长篇,阅读设置里选)
-  },
-
-  // 生成过前文总结的长篇才有:
-  summary: { text, updatedAt, forChapterId }
+  id, kind:'text'|'html',
+  title, cover, tags:[], category,
+  characterId,        // 这是谁的故事
+  instructionId,      // 归在哪个指令下(可空 = 未归类)
+  participants: [{ characterId, name, avatar, role }],   // 故事里出现的其他角色
+  background,
+  episodes: [{ id, title, type:'chapter'|'extra', prompt, content, order, createdAt }],
+  summary: { text, updatedAt, forChapterId } | null,
+  progress: { episodeId, ratio, page?, total? } | null,
+  readerSettings: { ... 见下 },
+  legacyBookId,       // 迁移过来的才有
+  createdAt, updatedAt
 }
 ```
 
-### `materials`(素材库,独立于书架)
+**篇章类型下放到 episode**:规格 2.4 里同一个故事本来就可能同时有正篇、章节和番外,原来"整本书要么是番外集要么是长篇"的二分法表达不了。所以 `type` 在 episode 上,故事级别不再有 extra/novel 之分。
+
+### `readerSettings`
 ```js
-{ id, name, path, folder, content, importedAt }
-// path 记录来源路径,比如嵌套解压时会是 "外层.zip / 内层.zip / 文件名.txt"
+{
+  background, pageEffect, showPageNav, customCss, fontUrl,
+  textOffsetX, textOffsetY, fontScale,          // 背景上的正文位置与字号
+  ruleStyle:'none'|'solid'|'dashed'|'grid', ruleGap, ruleOffset,   // 阅读辅助线
+  voicePresetId,                                 // 默认语音(没单独绑定的角色用它)
+  narrationMode:'tts'|'system'|'off', narrationPresetId, systemVoiceURI, systemRate,
+  annotatePresetId,                              // AI标注,可空
+  summaryPresetId
+}
 ```
 
-### `presets`(语音预设 + 总结预设,同一个 store,用 kind 区分)
+### `voiceBindings`(角色声音,独立于故事)
 ```js
-// 语音预设
-{ id, kind:'voice', name, characterId, endpoint, apiKey, voiceId, extraParams(JSON字符串), promptInjection,
-  bodyTemplate,     // 请求体 JSON 模板,占位符 {{text}} {{voice}} {{prompt}} {{apiKey}},留空用默认结构
-  headersTemplate,  // 请求头 JSON 模板,支持 {{apiKey}},留空默认 Authorization: Bearer <key>
-  audioPath,        // 响应里音频字段的点号路径,如 data.audio_url,留空则自动猜测
-  chunkSize,        // 单次请求的字数上限,默认 1500,超出会按段落切分逐段合成
-  provider,         // 用过哪个快捷配置(minimax/openai/elevenlabs/siliconflow/custom),拉音色列表时要用
-  createdAt }
+{ id, characterId, presetId, voiceId, updatedAt }
+```
+挂在**角色**上而不是故事上,所以同一个角色在任何故事里都用同一个声音。
 
-// 总结预设
-{ id, kind:'summary', name, endpoint, apiKey, model, promptTemplate, provider, createdAt }
+### `presets`(三种,用 kind 区分)
+```js
+{ id, kind:'voice',    name, provider, characterId, endpoint, apiKey, voiceId,
+  extraParams, promptInjection, bodyTemplate, headersTemplate, audioPath, chunkSize, createdAt }
+{ id, kind:'summary',  name, provider, endpoint, apiKey, model, promptTemplate, createdAt }
+{ id, kind:'annotate', name, provider, endpoint, apiKey, model, promptTemplate, createdAt }
+```
+
+### `settings`
+```js
+{ id:key, value }   // 目前只有 migratedToV2
 ```
 
 ---
+
+## v1 → v2 迁移
+
+`migrateBooksToStories()` 在 init 最开头跑,**在任何代码读 stories 之前**。
+
+- 一本 book → 一个 story,`legacyBookId` 记来源
+- `type:'extra'` 的 episodes → `type:'extra'` 并保留 prompt
+- `type:'novel'` 的 chapters → `type:'chapter'` 并保留 background
+- `characterId` 从 participants 里第一个 role==='char' 的推出来
+- tags / 分类 / customCss / 翻页样式全部无损带过来
+
+**旧的 `books` store 迁移后原样保留,永远不要删**——它是唯一的回滚依据。迁移只跑一次(`settings.migratedToV2`),重复加载不会重复建。导入 v1 备份(只有 books)时会把标记重置再跑一次迁移,否则旧备份导进来会变成看不见的数据。
 
 ## 各模块实现要点
 
@@ -231,6 +271,71 @@ grep -c "<\\\\/script>" meow-reader.html   # 应该等于文件里内嵌script�
 
 **一键复制**里,长篇只要有提要就多一个开关「用前情提要代替前面章节的正文」,勾选后复制的是 背景 + 提要 + **本章正文**(本章保留原文,因为续写最需要紧邻的上下文),这样写到几十章也不会一次复制出几十万字。
 
+## V1 规格新增的模块
+
+### 三维导航
+
+书架顶部切换 **按角色 / 按指令 / 全部故事 / HTML夹**。三种视图都只是同一份 story 列表的不同分组,没有哪个视图"拥有"数据:
+
+- **按角色** → 进角色看它自己的全部故事,按指令分组
+- **按指令** → 进指令看各个角色**各自独立**的故事,按角色分组
+
+改归类只动 `characterId` / `instructionId` 两个字段,故事内容一个字都不会变。**删指令或删角色只解除关联,下面的故事全部保留**(确认框里会写清楚保留多少个)。
+
+### HTML夹与隔离(硬性要求)
+
+HTML 作品是 `story.kind === 'html'`,正文原样交给独立的 `sandbox="allow-scripts"` iframe——**不给** `allow-same-origin`,所以每个文档拿到各自的 opaque origin。切换作品时整个 iframe 重建而不是改 srcdoc,否则上一个文档的定时器和监听器会在拆除期间继续跑。
+
+作者的 markup 原样透传,只在 `<head>` **最开头**注入一小段(viewport / base target / 极简 reset / 顶栏留白)。放最开头是有意的:作者后面写的任何规则都会覆盖它。注入用 `replace` 的**函数形式**而不是字符串形式——用户 CSS 里出现 `$&` 或 `$1` 时,字符串形式会把它当反向引用展开成乱码。
+
+**验证方式**:用两个处处撞名的作品(同样的 `.content`、同样的 `#main`、同样的全局 `SHARED` / `window.hits`、同样的函数名)对比。以后改这块务必重跑这个验证。
+
+### 滚动限制与沉浸模式
+
+- 滚动链用 `overscroll-behavior` 断掉;任何浮层打开时给 body 上锁(**计数**,因为浮层会叠)
+- 上锁前记住 `window.scrollY`,解锁后还原。`overflow:hidden` 会把滚动位置清零,不还原的话"进故事再退出来"会被扔回书架顶部
+- 沉浸模式下顶栏、页码条、箭头**全部消失**。展开靠一个完全不可见的触发区(顶部居中,背景和文字都透明),点它或在它上面下滑;正文中间点击、Esc 键也可以
+- 沉浸时**不重建 iframe**,而是 postMessage 把新的可用区域告诉文档,文档改自己的 padding 变量再跑一次 `layout()`。重建会让正文里嵌的 HTML 组件重新执行、阅读位置也会丢
+
+### 阅读位置
+
+滚动模式记 scrollY 比例,翻页模式记页码(页数变了就退回按比例折算)。写库有防抖,关阅读页时会补写没落盘的那次。**读书不算编辑,不动 `updatedAt`**,否则书架顺序会被读书行为搅乱。
+
+### 正文位置 / 字号 / 辅助线
+
+- 位置用 **padding 不是 transform**:transform 会把文字挪出分页测量过的盒子,页数就算错了
+- 左右偏移会让另一侧变窄,两侧都用 `max(8px, ...)` 兜底,否则偏移大了文字会贴到屏幕边缘
+- 辅助线画在页面容器的 `background` 上,**纯装饰**:不进入布局、不改变换行、不影响页数
+- 横线用 `repeating-linear-gradient`;虚线和方格用平铺的内联 SVG——CSS 渐变表达不了"每 N 像素画一条虚线"
+- 实时预览靠 postMessage 改 CSS 变量,不重建 iframe;分页模式改完会重跑分页
+
+### 朗读引擎
+
+引擎只接收一串 `{type, character, text}` 片段和一个"这段用哪个声音"的解析器(`buildVoicePlan`),**自己完全不认识阅读器**。换 TTS 服务或加新服务不需要动引擎。
+
+**说话人识别分两层**:
+
+1. **规则**(`segmentByRules`,永远可用、永不失败):引号内是对白、其余是旁白;`名字：`前缀、引号**前**的"角色B笑了笑，说："、引号**后**的"…”角色A低声说。"三种都能认。做法是先定位所有引号区间,再左右各看 16 字取最近的名字——只看引号前面、或不剥标点,后两种情况会认不出来。
+2. **AI 标注**(`annotateSegments`,可选增强):**绝不是单点故障**。没配预设、Key 错、模型不存在、网络不通、返回不是 JSON、数组为空,任何一种都自动退回规则识别。另外有一条**原文覆盖率校验**:模型改写或漏掉原文(去标点后字数偏离超过 10%/15%)就作废这次标注退回规则。
+
+**旁白三模式**:TTS / 系统语音(`speechSynthesis`,不消耗任何 API)/ 不朗读。系统语音**必须有看门狗**:没有安装语音、或遇到 Chrome 长文本停顿时 `onend` 可能永远不触发,没有看门狗整个队列会卡死。另有 8 秒 `resume()` 保活。
+
+**手动选读**是稳定兜底:长按正文某段 →「只朗读这一段 / 从这一段开始朗读」,有选中文字时多一项「朗读选中的文字」。长按结束的那次 click 会被吞掉,不会顺带翻页。
+
+---
+
+## 架构原则(改代码前先读)
+
+1. **故事隔离** — 不同角色的故事即使用同一个 Instruction 也必须完全独立
+2. **分类与内容解耦** — Character / Instruction / Story / Episode 只靠 id 关联,不互相写死
+3. **HTML 完全隔离** — 不同 HTML 不得共用 DOM / CSS / JS 运行环境
+4. **TTS 与阅读器解耦** — 换 Provider 不应该改阅读器核心
+5. **AI 标注只是辅助** — 失败必须自动退回规则识别
+6. **所有滚动都限制在阅读区域** — 禁止整页跟随正文滚动
+7. **沉浸模式必须真正全屏** — 不能靠漏出箭头作为展开入口
+8. **设置可复用** — 角色声音、背景、模型等配置存成独立对象,不要只绑在某个故事上
+9. **为扩展留接口** — 加 TTS / AI Provider / 阅读背景 / HTML 类型,都应该能在现有架构上加而不是重设计
+
 ## 其他注意事项
 
 - **RAR 完全没做**:纯前端没有可靠的RAR解析方案(专有格式,只有实验性WASM移植,RAR5/固实压缩/分卷经常直接失败),已经跟用户确认过放弃。TAR/TAR.GZ 因为格式简单、纯JS就能解析,所以顺手做了。
@@ -238,6 +343,7 @@ grep -c "<\\\\/script>" meow-reader.html   # 应该等于文件里内嵌script�
 - 弹窗系统 `.modal-overlay` 的 `z-index` 必须高于阅读页 `.reader-overlay`,否则从阅读页内打开的"更多菜单/阅读设置/复制"弹窗会被阅读页盖住(之前的真实bug,现在 modal-overlay 是 90,reader-overlay 是 70)。
 - FAB(书架加号按钮)的底部间距要用 `calc(78px + env(safe-area-inset-bottom))`,不能写死数字,否则在有Home Indicator的手机上会被底部导航栏遮住。
 
+- **音乐播放模块没有做**:规格 V1 的第十六、十七节缺失(编号从"十五 AI标注 API"直接跳到"十八"),而"核心目标"和"二十.6"都提到了音乐/网易云 Provider 却没有需求正文。已与使用者确认**不做**。
 - **接口调用全部走浏览器 fetch**,所以对方接口必须允许跨域(CORS)。这是纯前端应用绕不过去的限制,已经在报错文案里写清楚了。
 - 语音/总结的调试方式:仓库外可以起一个本地 mock 接口逐条验证请求体、请求头、响应解析和各种出错分支,比对着真实接口试要快得多。
 
