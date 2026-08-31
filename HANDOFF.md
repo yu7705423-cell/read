@@ -351,6 +351,8 @@ HTML 作品是 `story.kind === 'html'`,正文原样交给独立的 `sandbox="all
 
 ### 字体链接
 
+**字体链接有两种,不是一种**:一种是声明 @font-face 的**样式表**(Google Fonts 那类),另一种是**字体文件本身**(放在对象存储上的 .ttf/.otf/.woff2)。把字体文件塞进 `<link rel="stylesheet">` 什么也不会发生——浏览器拿二进制当 CSS 解析,然后就没有然后了,表现和"设置不生效"一模一样。所以按扩展名分流:是文件就自己生成 `@font-face`(family 用文件名推出来的可读名字,format 按扩展名给),是样式表才走 `<link>`。
+
 **字体名不能从 URL 猜**。原来只认 Google Fonts 的 `?family=` 形式,任何别的链接(自托管 css、别家字体站)都解析成空字符串——样式表加载了,正文却没引用那个字体,表现就是"输了链接没变化"。
 
 现在从 `document.fonts` 读真实的 @font-face 族名:跨域样式表的 `cssRules` 会抛 SecurityError,但 FontFaceSet 里的**名字仍然读得到**。URL 解析保留作为立即生效的首选(不用等文件到),拿到真名后覆盖。

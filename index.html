@@ -3987,6 +3987,26 @@ function currentThemeVars(){
   const pick = (name)=> cs.getPropertyValue(name).trim();
   return { bg:pick('--bg'), ink:pick('--ink'), inkSoft:pick('--ink-soft'), accent:pick('--accent'), accentSoft:pick('--accent-soft') };
 }
+/* A font URL is one of two quite different things: a stylesheet that declares
+   @font-face rules (Google Fonts and friends), or the font file itself sitting
+   on some storage bucket. Loading a .ttf through <link rel="stylesheet"> does
+   nothing at all — the browser parses a binary as CSS and moves on — which
+   looked exactly like "the font setting is broken". */
+const FONT_FILE_RE = /\.(ttf|otf|woff2|woff|ttc)(\?|#|$)/i;
+function isFontFileUrl(url){ return FONT_FILE_RE.test(String(url || '')); }
+function fontFormatOf(url){
+  const m = String(url || '').toLowerCase().match(FONT_FILE_RE);
+  return ({ ttf:'truetype', otf:'opentype', woff2:'woff2', woff:'woff', ttc:'collection' })[m && m[1]] || '';
+}
+/* Names the face after the file, so the status line can say something the
+   reader recognises instead of an internal placeholder. */
+function fontNameFromUrl(url){
+  try{
+    const last = decodeURIComponent(String(url).split(/[?#]/)[0].split('/').pop() || '');
+    const bare = last.replace(/\.[^.]+$/, '').replace(/["'\\]/g, '').trim();
+    return bare || 'MMUserFont';
+  }catch(e){ return 'MMUserFont'; }
+}
 function parseFontFamily(url){
   try{
     const m = url.match(/family=([^&]+)/);
@@ -4025,8 +4045,13 @@ function buildReaderDoc(entry, story, insets, restore){
     `<div class="epigraph mm-prompt">${escapeHtml(entry.prompt).replace(/\n/g,'<br>')}</div>` : '';
   const bodyHtml = renderContentHtml(entry.content || '') || `<p class="mm-p" style="color:${t.inkSoft};">(还没有正文内容)</p>`;
   const bg = rs.background ? rs.background : t.bg;
-  const fontFamily = rs.fontUrl ? parseFontFamily(rs.fontUrl) : '';
-  const fontLink = rs.fontUrl ? `<link rel="stylesheet" href="${rs.fontUrl}">` : '';
+  const fontIsFile = isFontFileUrl(rs.fontUrl);
+  const fontFamily = rs.fontUrl ? (fontIsFile ? fontNameFromUrl(rs.fontUrl) : parseFontFamily(rs.fontUrl)) : '';
+  // Only a stylesheet goes in a <link>; a font file gets its own @font-face.
+  const fontLink = (rs.fontUrl && !fontIsFile) ? `<link rel="stylesheet" href="${rs.fontUrl}">` : '';
+  const fontFaceCss = fontIsFile ? `@font-face{font-family:"${fontFamily}";src:url("${
+    String(rs.fontUrl).replace(/["\\]/g, '')}")${
+    fontFormatOf(rs.fontUrl) ? ` format("${fontFormatOf(rs.fontUrl)}")` : ''};font-display:swap;}` : '';
   const effect = rs.pageEffect || 'scroll';
   const isPaginate = isPaginatedEffect(effect);
   const typo = {
@@ -4049,6 +4074,7 @@ function buildReaderDoc(entry, story, insets, restore){
   const padBottom = Math.max(20, (insets && insets.bottom) || 0) + 16;
 
   const baseCss = `
+    ${fontFaceCss}
     *{box-sizing:border-box;}
     html,body{height:100%; overscroll-behavior:none;}
     body{
@@ -4909,7 +4935,7 @@ function openAppearanceStudio(opts){
         ${inkRowHtml('bgaInk', typo.textColor || '', '正文颜色')}
         <label class="field-label" style="margin-top:12px;">字体链接</label>
         <div class="hint-text" id="bgaFontStatus" style="margin:-2px 2px 6px;"></div>
-        <input type="text" id="bgaFontUrl" placeholder="https://fonts.googleapis.com/css2?family=..." value="${escapeAttr(startFontUrl || '')}">
+        <input type="text" id="bgaFontUrl" placeholder="字体css链接,或直接 .ttf / .otf / .woff2 地址" value="${escapeAttr(startFontUrl || '')}">
       </div>
 
       <div data-panel="css" hidden>
@@ -5235,8 +5261,8 @@ async function openReaderSettingsSheet(story, onSaved, previewEntry){
       <div class="hint-text" id="pageNavHint" ${isHtmlStory(story)?'style="display:none;"':''}>关掉之后靠左右滑动手势、点击屏幕左右两侧、或键盘方向键翻页。</div>
       <label class="field-label">背景</label>
       <div class="bg-swatch-row" id="bgSwatchRow"></div>
-      <label class="field-label">字体链接(可选,如 Google Fonts CSS 链接)</label>
-      <input type="text" id="fontUrlInput" placeholder="https://fonts.googleapis.com/css2?family=..." value="${escapeAttr(rs.fontUrl||'')}">
+      <label class="field-label">字体链接(可选)</label>
+      <input type="text" id="fontUrlInput" placeholder="字体css链接,或直接 .ttf / .otf / .woff2 地址" value="${escapeAttr(rs.fontUrl||'')}">
       ${isHtmlStory(story) ? '' : `
         <div class="section-title" style="margin-top:16px;">正文位置与字号</div>
         <div class="hint-text" style="margin:-4px 2px 6px;">位置、辅助线、颜色、自定义CSS 都能在里面对着实时预览调。</div>
