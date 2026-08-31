@@ -288,6 +288,10 @@ body.mm-locked{overflow:hidden;}
   font-family:"Noto Serif SC",Georgia,serif; line-height:1.95; color:var(--ink);
 }
 .bga-stage.dragging .bga-text{cursor:grabbing;}
+/* The clip box shows the text area's real bounds: a dashed outline while it is
+   constrained, and overflow cut off exactly where the reader would break. */
+.bga-clip{overflow:hidden;}
+.bga-clip.framed{outline:1px dashed rgba(128,128,128,.75); outline-offset:2px;}
 .bga-text p{margin:0 0 1.1em;}
 /* Text colour picker: preset swatches plus a native colour input, shown both
    in reader settings and inside the adjuster (where the clash is visible). */
@@ -750,7 +754,7 @@ function makeReaderSettings(over){
     customCss:'', fontUrl:'',
     voicePresetId:'', summaryPresetId:'', annotatePresetId:'',
     narrationMode:'tts', narrationPresetId:'', narrationVoiceId:'', systemVoiceURI:'', systemRate:1,
-    textOffsetX:0, textOffsetY:0, fontScale:100, textWidth:100, textColor:'',
+    textOffsetX:0, textOffsetY:0, fontScale:100, textWidth:100, textHeight:100, textColor:'',
     ruleStyle:'none', ruleGap:34, ruleOffset:0
   }, over || {});
 }
@@ -3809,6 +3813,7 @@ function buildReaderDoc(entry, story, insets, restore){
   const typo = {
     textOffsetX: rs.textOffsetX|0, textOffsetY: rs.textOffsetY|0,
     fontScale: rs.fontScale || 100, textWidth: rs.textWidth || 100,
+    textHeight: rs.textHeight || 100,
     textColor: rs.textColor || '',
     ruleStyle: rs.ruleStyle || 'none', ruleGap: rs.ruleGap || 34, ruleOffset: rs.ruleOffset|0
   };
@@ -3848,14 +3853,22 @@ function buildReaderDoc(entry, story, insets, restore){
       --mm-offset-x:${typo.textOffsetX|0}px; --mm-offset-y:${typo.textOffsetY|0}px;
       --mm-font-scale:${(typo.fontScale||100)/100};
       --mm-width:${(typo.textWidth || 100) / 100};
+      --mm-height:${typo.textHeight || 100}vh;
       --mm-ink:${typo.textColor || t.ink};
     }
     /* Nudging the text over a background picture is padding, not transform:
        a transform would move the text off the box the pagination measured.
        Padding cannot go negative, so pushing up stops when the text reaches
        the top edge — that is the real limit, not a chosen one. */
+    /* --mm-height caps how tall the text area may be, turning the offsets and
+       the width into a real box. Anything that does not fit flows to the next
+       page instead of spilling past the box. Growing the bottom padding is how
+       the cap is enforced, because the column box itself must stay one screen
+       tall for pagination to work. */
     #pages{
-      padding:max(0px, calc(var(--mm-pad-top) + var(--mm-offset-y))) 0 var(--mm-pad-bottom);
+      padding-top:max(0px, calc(var(--mm-pad-top) + var(--mm-offset-y)));
+      padding-bottom:max(var(--mm-pad-bottom),
+                         calc(100vh - max(0px, var(--mm-pad-top) + var(--mm-offset-y)) - var(--mm-height)));
       background-repeat:repeat;
     }
     /* Width and position are independent. The block's width is fixed first,
@@ -3916,6 +3929,7 @@ function buildReaderDoc(entry, story, insets, restore){
       setVar('--mm-offset-y', (t.textOffsetY|0) + 'px');
       setVar('--mm-font-scale', String((t.fontScale || 100) / 100));
       setVar('--mm-width', String((t.textWidth || 100) / 100));
+      setVar('--mm-height', (t.textHeight || 100) + 'vh');
       // Empty means "follow the theme", so fall back rather than blanking it.
       if(t.textColor !== undefined) setVar('--mm-ink', t.textColor || THEME_INK);
       var pages = document.getElementById('pages');
@@ -4541,15 +4555,19 @@ function openBgAdjuster(bg, startTypo, onApply){
     <div class="modal-body">
       <div class="bga-stage" id="bgaStage">
         <div class="bga-text" id="bgaText">
-          <p>夜里的风从窗缝钻进来,吹得烛火晃了晃。</p>
-          <p>“你来得比我想的早。”她没有回头,只是把手里的书又翻过一页。</p>
-          <p>屋外的雨还在下,檐角的水一滴一滴落在青石板上,声音很轻。</p>
+          <div class="bga-clip" id="bgaClip">
+            <p>夜里的风从窗缝钻进来,吹得烛火晃了晃。</p>
+            <p>“你来得比我想的早。”她没有回头,只是把手里的书又翻过一页。</p>
+            <p>屋外的雨还在下,檐角的水一滴一滴落在青石板上,声音很轻。</p>
+            <p>她把茶推过来,杯壁上还沾着水汽。“坐吧,雨一时半会儿停不了。”</p>
+          </div>
         </div>
         <div class="bga-hint">按住文字拖动,或用下面的滑杆微调</div>
       </div>
       <label class="slider-row"><span>上下</span><input type="range" id="bgaY" min="-200" max="800" step="2" value="${typo.textOffsetY|0}"><b id="bgaYVal">${typo.textOffsetY|0}</b></label>
       <label class="slider-row"><span>左右</span><input type="range" id="bgaX" min="-400" max="400" step="2" value="${typo.textOffsetX|0}"><b id="bgaXVal">${typo.textOffsetX|0}</b></label>
       <label class="slider-row"><span>宽度</span><input type="range" id="bgaWidth" min="15" max="100" step="1" value="${typo.textWidth||100}"><b id="bgaWidthVal">${typo.textWidth||100}%</b></label>
+      <label class="slider-row"><span>高度</span><input type="range" id="bgaHeight" min="15" max="100" step="1" value="${typo.textHeight||100}"><b id="bgaHeightVal">${typo.textHeight||100}%</b></label>
       <label class="slider-row"><span>字号</span><input type="range" id="bgaScale" min="25" max="400" step="5" value="${typo.fontScale||100}"><b id="bgaScaleVal">${typo.fontScale||100}%</b></label>
       ${inkRowHtml('bgaInk', typo.textColor || '', '正文颜色')}
       <div class="btn-row bga-actions">
@@ -4561,6 +4579,7 @@ function openBgAdjuster(bg, startTypo, onApply){
 
   const stage = overlay.querySelector('#bgaStage');
   const textEl = overlay.querySelector('#bgaText');
+  const clipEl = overlay.querySelector('#bgaClip');
   if(bg) stage.style.background = bg;
 
   /* Same numbers as buildReaderDoc: 36px of top chrome padding and 22px side
@@ -4595,11 +4614,19 @@ function openBgAdjuster(bg, startTypo, onApply){
     textEl.style.paddingRight = (vw - content - left) * s + 'px';
     textEl.style.fontSize = (BASE_FONT * ((typo.fontScale || 100) / 100) * s) + 'px';
     textEl.style.color = typo.textColor || 'var(--ink)';
+    // The clip box is the text area itself: what overflows here is what flows
+    // onto the next page in the reader.
+    const capped = (typo.textHeight || 100) < 100;
+    clipEl.style.height = capped
+      ? Math.max(12, (window.innerHeight || 780) * (typo.textHeight / 100) * s) + 'px'
+      : 'auto';
+    clipEl.classList.toggle('framed', capped || (typo.textWidth || 100) < 100);
   }
   const sliders = [
     ['#bgaY','#bgaYVal','textOffsetY', v=>String(v)],
     ['#bgaX','#bgaXVal','textOffsetX', v=>String(v)],
     ['#bgaWidth','#bgaWidthVal','textWidth', v=>v+'%'],
+    ['#bgaHeight','#bgaHeightVal','textHeight', v=>v+'%'],
     ['#bgaScale','#bgaScaleVal','fontScale', v=>v+'%']
   ];
   function paintSliders(){
@@ -4641,7 +4668,7 @@ function openBgAdjuster(bg, startTypo, onApply){
   });
   overlay.querySelector('#bgaReset').addEventListener('click', ()=>{
     typo.textOffsetX = 0; typo.textOffsetY = 0; typo.fontScale = 100;
-    typo.textWidth = 100; typo.textColor = '';
+    typo.textWidth = 100; typo.textHeight = 100; typo.textColor = '';
     paintSliders(); repaintInk(); paintStage();
   });
   overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
@@ -4694,6 +4721,7 @@ async function openReaderSettingsSheet(story, onSaved){
         <label class="slider-row"><span>上下</span><input type="range" id="tOffsetY" min="-200" max="800" step="2" value="${rs.textOffsetY|0}"><b id="tOffsetYVal">${rs.textOffsetY|0}</b></label>
         <label class="slider-row"><span>左右</span><input type="range" id="tOffsetX" min="-400" max="400" step="2" value="${rs.textOffsetX|0}"><b id="tOffsetXVal">${rs.textOffsetX|0}</b></label>
         <label class="slider-row"><span>宽度</span><input type="range" id="tTextWidth" min="15" max="100" step="1" value="${rs.textWidth||100}"><b id="tTextWidthVal">${rs.textWidth||100}%</b></label>
+        <label class="slider-row"><span>高度</span><input type="range" id="tTextHeight" min="15" max="100" step="1" value="${rs.textHeight||100}"><b id="tTextHeightVal">${rs.textHeight||100}%</b></label>
         <label class="slider-row"><span>字号</span><input type="range" id="tFontScale" min="25" max="400" step="5" value="${rs.fontScale||100}"><b id="tFontScaleVal">${rs.fontScale||100}%</b></label>
         <label class="field-label" style="margin-top:10px;">正文颜色</label>
         ${inkRowHtml('tInkRow', rs.textColor || '')}
@@ -4758,10 +4786,11 @@ async function openReaderSettingsSheet(story, onSaved){
   let typo = {
     textOffsetX: rs.textOffsetX|0, textOffsetY: rs.textOffsetY|0,
     fontScale: rs.fontScale || 100, textWidth: rs.textWidth || 100,
+    textHeight: rs.textHeight || 100,
     textColor: rs.textColor || '',
     ruleStyle: rs.ruleStyle || 'none', ruleGap: rs.ruleGap || 34, ruleOffset: rs.ruleOffset|0
   };
-  const TYPO_DEFAULTS = { textOffsetX:0, textOffsetY:0, fontScale:100, textWidth:100, textColor:'',
+  const TYPO_DEFAULTS = { textOffsetX:0, textOffsetY:0, fontScale:100, textWidth:100, textHeight:100, textColor:'',
                           ruleStyle:'none', ruleGap:34, ruleOffset:0 };
   function previewTypo(){
     const ifr = document.querySelector('#readerIframe');
@@ -4775,6 +4804,7 @@ async function openReaderSettingsSheet(story, onSaved){
       typo.textOffsetY = next.textOffsetY;
       typo.fontScale = next.fontScale;
       typo.textWidth = next.textWidth;
+      typo.textHeight = next.textHeight;
       typo.textColor = next.textColor;
       syncTypoUi();
       previewTypo();
@@ -4785,6 +4815,7 @@ async function openReaderSettingsSheet(story, onSaved){
       ['#tOffsetY','#tOffsetYVal','textOffsetY', v=>String(v)],
       ['#tOffsetX','#tOffsetXVal','textOffsetX', v=>String(v)],
       ['#tTextWidth','#tTextWidthVal','textWidth', v=>v+'%'],
+      ['#tTextHeight','#tTextHeightVal','textHeight', v=>v+'%'],
       ['#tFontScale','#tFontScaleVal','fontScale', v=>v+'%'],
       ['#tRuleGap','#tRuleGapVal','ruleGap', v=>String(v)],
       ['#tRuleOffset','#tRuleOffsetVal','ruleOffset', v=>String(v)]
@@ -4907,7 +4938,7 @@ async function openReaderSettingsSheet(story, onSaved){
       pageEffect: chosenEffect,
       showPageNav: (overlay.querySelector('#showPageNavChk')||{}).checked !== false,
       textOffsetX: typo.textOffsetX, textOffsetY: typo.textOffsetY, fontScale: typo.fontScale,
-      textWidth: typo.textWidth, textColor: typo.textColor,
+      textWidth: typo.textWidth, textHeight: typo.textHeight, textColor: typo.textColor,
       ruleStyle: typo.ruleStyle, ruleGap: typo.ruleGap, ruleOffset: typo.ruleOffset,
       customCss: overlay.querySelector('#customCssInputR').value,
       fontUrl: overlay.querySelector('#fontUrlInput').value.trim(),
