@@ -3479,6 +3479,41 @@ function buildReaderDoc(entry, story, insets){
   return `<!DOCTYPE html><html><head><meta charset="utf-8">${fontLink}<style>${baseCss}${rs.customCss||''}</style></head><body class="mm-body"><div id="pages" class="mm-page"><div class="inner mm-content">${promptBlock}${bodyHtml}</div></div></body>${script}</html>`;
 }
 
+/* ================= HTML documents =================
+   An HTML work is rendered as its own document inside its own sandboxed
+   iframe, never spliced into the app's DOM. The sandbox has allow-scripts but
+   NOT allow-same-origin, so each document gets a unique opaque origin: two
+   works can both define `.content`, `#main` or a global `init` and still not
+   see or affect each other, or the app around them.
+
+   The author's markup is passed through as-is. The only thing added is a small
+   block at the very START of <head> — first means every author rule that comes
+   later wins, so the injection can never silently override their design. */
+function buildHtmlDoc(entry, story, insets){
+  const raw = entry.content || '';
+  const rs = story.readerSettings || {};
+  const padTop = Math.max(0, (insets && insets.top) || 0);
+  const inject = `<meta name="viewport" content="width=device-width, initial-scale=1">`
+    + `<base target="_blank">`
+    + `<style>`
+    + `html{-webkit-text-size-adjust:100%;}`
+    + `body{margin:0; padding-top:${padTop}px;}`   /* clear the floating topbar */
+    + `img,video,canvas,svg{max-width:100%;}`
+    + `</style>`
+    + (rs.customCss ? `<style data-mm-user>${rs.customCss}</style>` : '');
+
+  // Use a replacer function, never a replacement string: user CSS can contain
+  // `$&` / `$1`, which a string replacement would expand into garbage.
+  const put = (re, build)=> raw.replace(re, (...m)=> build(...m));
+  if(/<html[\s>]/i.test(raw)){
+    if(/<head[\s>]/i.test(raw)) return put(/<head([^>]*)>/i, (m, attrs)=> '<head' + attrs + '>' + inject);
+    return put(/<html([^>]*)>/i, (m, attrs)=> '<html' + attrs + '><head>' + inject + '</head>');
+  }
+  if(/<head[\s>]/i.test(raw)) return put(/<head([^>]*)>/i, (m, attrs)=> '<head' + attrs + '>' + inject);
+  return `<!DOCTYPE html><html><head><meta charset="utf-8">${inject}</head><body>${raw}</body></html>`;
+}
+function isHtmlStory(story){ return (story && story.kind) === 'html'; }
+
 /* ================= Custom CSS cheatsheet =================
    Both custom-CSS boxes get a list of the class names that actually exist,
    with a runnable example under each that can be tapped straight into the
@@ -3644,15 +3679,16 @@ async function openReaderSettingsSheet(story, onSaved){
   const overlay = openModal(`
     <div class="modal-header"><h2>阅读设置</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
     <div class="modal-body">
+      ${isHtmlStory(story) ? `<div class="hint-text" style="margin-bottom:10px;">HTML 作品由它自己的代码排版,所以没有翻页样式和正文位置设置。它在独立的沙箱 iframe 里运行,和其它作品、和 App 本身互不干扰。</div>` : `
       <label class="field-label">翻页样式</label>
       <div class="chip-row">
         ${PAGE_EFFECTS.map(ef=>`<button class="choice-chip" data-effect="${ef.id}">${ICONS[ef.icon]} ${ef.name}</button>`).join('')}
-      </div>
-      <label class="switch-row" id="pageNavRow">
+      </div>`}
+      <label class="switch-row" id="pageNavRow" ${isHtmlStory(story)?'style="display:none;"':''}>
         <span>显示底部页码条</span>
         <input type="checkbox" id="showPageNavChk" ${rs.showPageNav === false ? '' : 'checked'}>
       </label>
-      <div class="hint-text" id="pageNavHint">关掉之后靠左右滑动手势、点击屏幕左右两侧、或键盘方向键翻页。</div>
+      <div class="hint-text" id="pageNavHint" ${isHtmlStory(story)?'style="display:none;"':''}>关掉之后靠左右滑动手势、点击屏幕左右两侧、或键盘方向键翻页。</div>
       <label class="field-label">背景</label>
       <div class="bg-swatch-row" id="bgSwatchRow"></div>
       <label class="field-label">字体链接(可选,如 Google Fonts CSS 链接)</label>
@@ -3699,6 +3735,7 @@ async function openReaderSettingsSheet(story, onSaved){
   const navRow = overlay.querySelector('#pageNavRow');
   const navHint = overlay.querySelector('#pageNavHint');
   function paintEffectChips(){
+    if(isHtmlStory(story)) return;
     overlay.querySelectorAll('[data-effect]').forEach(b=>{
       b.classList.toggle('selected', b.dataset.effect === chosenEffect);
     });
@@ -3716,7 +3753,7 @@ async function openReaderSettingsSheet(story, onSaved){
     story.readerSettings = {
       background: chosenBg,
       pageEffect: chosenEffect,
-      showPageNav: overlay.querySelector('#showPageNavChk').checked,
+      showPageNav: (overlay.querySelector('#showPageNavChk')||{}).checked !== false,
       customCss: overlay.querySelector('#customCssInputR').value,
       fontUrl: overlay.querySelector('#fontUrlInput').value.trim(),
       voicePresetId: (overlay.querySelector('#voicePresetSelect')||{}).value || '',
@@ -3793,7 +3830,8 @@ function openReaderPage(parentOverlay, story, entryId){
     setCollapsed(false);
     const body = reader.querySelector('#readerBody');
     const rs = story.readerSettings || {};
-    const isPaginate = isPaginatedEffect(rs.pageEffect || 'scroll');
+    // Paged layout is a text-typesetting feature; an HTML work lays itself out.
+    const isPaginate = !isHtmlStory(story) && isPaginatedEffect(rs.pageEffect || 'scroll');
     // The nav bar is optional: with it off you page by swiping or tapping the
     // left/right edge, which is what most people want on a phone.
     const wantNav = isPaginate && rs.showPageNav !== false;
@@ -3805,7 +3843,10 @@ function openReaderPage(parentOverlay, story, entryId){
       top: topbar.offsetHeight || 54,
       bottom: wantNav ? (pagenav.offsetHeight || 48) : safeAreaInset('bottom')
     };
-    body.innerHTML = `<iframe id="readerIframe" sandbox="allow-scripts" srcdoc="${escapeAttr(buildReaderDoc(entry, story, insets))}"></iframe>`;
+    // A fresh iframe every time: replacing srcdoc on the existing one would let
+    // the previous document's timers and listeners live on during teardown.
+    const doc = isHtmlStory(story) ? buildHtmlDoc(entry, story, insets) : buildReaderDoc(entry, story, insets);
+    body.innerHTML = `<iframe id="readerIframe" sandbox="allow-scripts" srcdoc="${escapeAttr(doc)}"></iframe>`;
   }
 
   function paintEdit(){
@@ -3821,8 +3862,8 @@ function openReaderPage(parentOverlay, story, entryId){
           <label class="field-label">番外要求(剧情主题/设定要求)</label>
           <textarea id="rPrompt" style="min-height:70px;">${escapeHtml(entry.prompt || '')}</textarea>
         ` : ''}
-        <label class="field-label">正文</label>
-        <textarea id="rContent" style="min-height:260px;">${escapeHtml(entry.content || '')}</textarea>
+        <label class="field-label">${isHtmlStory(story) ? 'HTML 源码' : '正文'}</label>
+        <textarea id="rContent" style="min-height:260px;${isHtmlStory(story)?' font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px;':''}">${escapeHtml(entry.content || '')}</textarea>
         <div class="hint-text">大段文字会自动按空行分段正常阅读;以 "&lt;" 开头的独立段落会被当作HTML/CSS原样渲染(可用来插入小组件或整段自定义HTML)。</div>
         <div class="btn-row">
           <button class="btn primary block" id="rSaveBtn">保存并预览</button>
