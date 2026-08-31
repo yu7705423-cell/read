@@ -27,7 +27,7 @@
   --shadow: 0 1px 2px rgba(0,0,0,0.2), 0 6px 20px rgba(0,0,0,0.35);
 }
 *{box-sizing:border-box;}
-html,body{margin:0;padding:0;height:100%;}
+html,body{margin:0;padding:0;height:100%; overscroll-behavior:none;}
 body{
   background:var(--bg); color:var(--ink);
   font-family:"Noto Sans SC",-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
@@ -192,7 +192,8 @@ textarea{resize:vertical; min-height:80px; line-height:1.55;}
   display:flex; align-items:center; padding:14px 16px 10px; border-bottom:1px solid var(--border); position:sticky; top:0; background:var(--bg);
 }
 .modal-header h2{font-size:16px; margin:0; flex:1;}
-.modal-body{padding:6px 16px 20px; overflow-y:auto;}
+.modal-body{padding:6px 16px 20px; overflow-y:auto; overscroll-behavior:contain;}
+body.mm-locked{overflow:hidden;}
 .modal-close{background:none; border:none; font-size:18px; color:var(--ink-faint); cursor:pointer; padding:4px 8px;}
 
 /* actionsheet for + button */
@@ -241,13 +242,21 @@ textarea{resize:vertical; min-height:80px; line-height:1.55;}
 .reader-topbar .r-title{
   flex:1; font-size:13.5px; font-weight:600; text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding:0 4px;
 }
+/* Immersive mode leaves NOTHING on screen: no arrow, no bar, no strip. What
+   brings the chrome back is this invisible trigger zone at the top centre —
+   it has no paint of its own, so the whole screen still reads as page. */
 .reader-peek{
-  position:absolute; top:0; left:50%; transform:translateX(-50%); z-index:7; margin-top:env(safe-area-inset-top);
-  background:var(--surface); border:1px solid var(--border); border-top:none; border-radius:0 0 12px 12px;
-  padding:3px 20px; color:var(--ink-faint); display:none; align-items:center; justify-content:center; cursor:pointer;
+  position:absolute; top:0; left:50%; transform:translateX(-50%); z-index:8;
+  width:44%; max-width:190px; height:calc(26px + env(safe-area-inset-top));
+  background:none; border:none; padding:0; margin:0; color:transparent;
+  display:none; cursor:pointer; -webkit-tap-highlight-color:transparent;
 }
-.reader-peek.show{display:flex;}
+.reader-peek.show{display:block;}
 .reader-body{position:absolute; inset:0;}
+/* Scrolling belongs to the reading area only: the overlay itself never scrolls
+   and never chains its scroll up into the page behind it. */
+.reader-overlay{overscroll-behavior:contain;}
+.reader-body iframe{overscroll-behavior:contain;}
 .reader-body iframe{width:100%; height:100%; border:none; display:block;}
 .reader-edit-body{position:absolute; inset:0; overflow-y:auto; padding:calc(64px + env(safe-area-inset-top)) 16px 16px;}
 .reader-pagenav{
@@ -861,6 +870,25 @@ function switchTab(tab){
    whatever was opened last always sits on top: the reader must cover the book
    detail sheet it was launched from, while sheets opened from inside the reader
    must in turn cover the reader. */
+/* The page behind an overlay must not scroll — otherwise a flick that starts on
+   the reader chains through and moves the shelf underneath. Counted, because
+   overlays stack. */
+let overlayLockCount = 0;
+let lockedScrollY = 0;
+function lockPageScroll(){
+  // overflow:hidden resets the scroll offset, so remember where the page was
+  // and put it back on the way out — otherwise opening a story and coming back
+  // dumps you at the top of the shelf.
+  if(!overlayLockCount) lockedScrollY = window.scrollY;
+  overlayLockCount++;
+  document.body.classList.add('mm-locked');
+}
+function unlockPageScroll(){
+  overlayLockCount = Math.max(0, overlayLockCount - 1);
+  if(overlayLockCount) return;
+  document.body.classList.remove('mm-locked');
+  window.scrollTo(0, lockedScrollY);
+}
 function nextOverlayZ(){
   const root = document.getElementById('modalRoot');
   let top = 65;
@@ -877,6 +905,7 @@ function openModal(innerHtml, opts={}){
   overlay.style.zIndex = nextOverlayZ();
   overlay.innerHTML = `<div class="modal-sheet">${innerHtml}</div>`;
   root.appendChild(overlay);
+  lockPageScroll();
   requestAnimationFrame(()=>overlay.classList.add('open'));
   if(!opts.noBackdropClose){
     overlay.addEventListener('click', (e)=>{ if(e.target === overlay) closeModal(overlay); });
@@ -884,7 +913,10 @@ function openModal(innerHtml, opts={}){
   return overlay;
 }
 function closeModal(overlay){
+  if(overlay.dataset.mmClosed) return;   // double-close must not unbalance the lock
+  overlay.dataset.mmClosed = '1';
   overlay.classList.remove('open');
+  unlockPageScroll();
   setTimeout(()=> overlay.remove(), 200);
 }
 
@@ -3176,7 +3208,7 @@ function safeAreaInset(side){
   probe.remove();
   return h;
 }
-function buildReaderDoc(entry, story, insets){
+function buildReaderDoc(entry, story, insets, restore){
   const t = currentThemeVars();
   const rs = story.readerSettings || {};
   const promptBlock = entry.prompt ?
@@ -3200,7 +3232,7 @@ function buildReaderDoc(entry, story, insets){
 
   const baseCss = `
     *{box-sizing:border-box;}
-    html,body{height:100%;}
+    html,body{height:100%; overscroll-behavior:none;}
     body{
       margin:0; background:${bg}; color:${t.ink};
       font-family:${fontFamily ? `"${fontFamily}",` : ''}"Noto Serif SC",Georgia,serif; font-size:16.5px; line-height:1.95; word-break:break-word;
@@ -3214,7 +3246,11 @@ function buildReaderDoc(entry, story, insets){
       padding:12px 14px; margin:0 0 28px; line-height:1.7;
     }
     a{color:${t.accent};}
-    #pages{ padding:${padTop}px 0 ${padBottom}px; }
+    /* Driven by variables so immersive mode can reclaim the chrome's space
+       without re-rendering the document (which would restart any embedded
+       widget and lose the reading position). */
+    :root{ --mm-pad-top:${padTop}px; --mm-pad-bottom:${padBottom}px; }
+    #pages{ padding:var(--mm-pad-top) 0 var(--mm-pad-bottom); }
     #pages .inner{ padding:0 22px; }
     #pages .inner > *{ max-width:100%; }
     ${isPaginate ? `
@@ -3229,6 +3265,8 @@ function buildReaderDoc(entry, story, insets){
   (function(){
     var EFFECT = ${JSON.stringify(effect)};
     var PAD_TOP = ${padTop}, PAD_BOTTOM = ${padBottom};
+    var RESTORE = ${JSON.stringify(restore || null)};
+    var restored = false;
     var pageIndex = 0, totalPages = 1, pagesEl, innerEl, animating = false;
     var dragStartX = null, dragStartY = null, dragDx = 0, dragging = false, moved = false, pointerDown = false;
 
@@ -3274,6 +3312,14 @@ function buildReaderDoc(entry, story, insets){
         if(needed === totalPages) break;
         totalPages = Math.max(1, needed);
       }
+      if(!restored && RESTORE){
+        restored = true;
+        // Saved as a ratio so it survives a different screen size / font size,
+        // which change how many pages the same text needs.
+        pageIndex = RESTORE.page !== undefined && RESTORE.total === totalPages
+          ? RESTORE.page
+          : Math.round((RESTORE.ratio || 0) * (totalPages - 1));
+      }
       if(pageIndex > totalPages-1) pageIndex = totalPages-1;
       if(pageIndex < 0) pageIndex = 0;
       animating = false;
@@ -3294,6 +3340,14 @@ function buildReaderDoc(entry, story, insets){
     }
     function report(){
       parent.postMessage({mmReaderPage:true, index:pageIndex, total:totalPages}, '*');
+      parent.postMessage({mmProgress:true, page:pageIndex, total:totalPages,
+        ratio: totalPages > 1 ? pageIndex/(totalPages-1) : 0}, '*');
+    }
+    function applyInsets(top, bottom){
+      PAD_TOP = top; PAD_BOTTOM = bottom;
+      document.documentElement.style.setProperty('--mm-pad-top', top + 'px');
+      document.documentElement.style.setProperty('--mm-pad-bottom', bottom + 'px');
+      if(pagesEl) layout();   // re-paginate: the usable height just changed
     }
     function transitionTo(transform, opacity, ms, easing, done){
       pagesEl.style.transition = 'transform ' + ms + 'ms ' + easing + ', opacity ' + ms + 'ms ' + easing;
@@ -3463,16 +3517,50 @@ function buildReaderDoc(entry, story, insets){
       if(e.data.mmGoNext) goTo(pageIndex+1);
       if(e.data.mmGoPage !== undefined) goTo(e.data.mmGoPage);
       if(e.data.mmRelayout) layout();
+      if(e.data.mmInsets) applyInsets(e.data.mmInsets.top, e.data.mmInsets.bottom);
     });
   })();
   <\/script>
   ` : `
   <script>
-  document.addEventListener('click', function(e){
-    var el = e.target.closest('a,button,input,textarea,select,[onclick],[role="button"],summary');
-    if(el) return;
-    parent.postMessage({mmReaderToggle:true}, '*');
-  });
+  (function(){
+    var RESTORE = ${JSON.stringify(restore || null)};
+    var restored = false, tick = null;
+
+    function maxScroll(){
+      return Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+    }
+    function report(){
+      var max = maxScroll();
+      parent.postMessage({mmProgress:true, ratio: max > 0 ? window.scrollY/max : 0}, '*');
+    }
+    function applyInsets(top, bottom){
+      document.documentElement.style.setProperty('--mm-pad-top', top + 'px');
+      document.documentElement.style.setProperty('--mm-pad-bottom', bottom + 'px');
+    }
+    function restore(){
+      if(restored || !RESTORE) return;
+      restored = true;
+      var max = maxScroll();
+      if(max > 0) window.scrollTo(0, (RESTORE.ratio || 0) * max);
+    }
+    window.addEventListener('scroll', function(){
+      // Throttled: the parent writes this to IndexedDB.
+      if(tick) return;
+      tick = setTimeout(function(){ tick = null; report(); }, 400);
+    }, {passive:true});
+    window.addEventListener('load', function(){ restore(); report(); });
+    if(document.fonts && document.fonts.ready) document.fonts.ready.then(restore);
+    window.addEventListener('message', function(e){
+      if(!e.data) return;
+      if(e.data.mmInsets) applyInsets(e.data.mmInsets.top, e.data.mmInsets.bottom);
+    });
+    document.addEventListener('click', function(e){
+      var el = e.target.closest('a,button,input,textarea,select,[onclick],[role="button"],summary');
+      if(el) return;
+      parent.postMessage({mmReaderToggle:true}, '*');
+    });
+  })();
   <\/script>
   `;
 
@@ -3793,64 +3881,129 @@ function openReaderPage(parentOverlay, story, entryId){
     </div>
   `;
   root.appendChild(reader);
+  lockPageScroll();
   requestAnimationFrame(()=>reader.classList.add('open'));
 
   const topbar = reader.querySelector('#readerTopbar');
   const peek = reader.querySelector('#readerPeek');
   const pagenav = reader.querySelector('#readerPagenav');
+  let immersive = false;
+  let wantNav = false;
 
-  function setCollapsed(state){
+  /* Immersive means the whole screen is the page: every control is hidden and
+     none of them can be tapped. Coming back out is a deliberate action on the
+     invisible trigger zone (or the centre tap / Escape), never an arrow left
+     poking out of the edge. */
+  function chromeInsets(){
+    if(immersive) return { top: safeAreaInset('top') + 12, bottom: safeAreaInset('bottom') + 12 };
+    return {
+      top: topbar.offsetHeight || 54,
+      bottom: wantNav ? (pagenav.offsetHeight || 48) : safeAreaInset('bottom')
+    };
+  }
+  function setImmersive(state){
+    if(immersive === state) return;
+    immersive = state;
     topbar.classList.toggle('collapsed', state);
     peek.classList.toggle('show', state);
-    if(pagenav.style.display !== 'none'){
-      pagenav.classList.toggle('collapsed', state);
+    if(pagenav.style.display !== 'none') pagenav.classList.toggle('collapsed', state);
+    // Tell the document its usable box changed instead of re-rendering it:
+    // re-rendering would restart embedded widgets and lose the position, and
+    // the document re-runs its own layout so nothing gets mis-measured.
+    const ifr = reader.querySelector('#readerIframe');
+    if(ifr && ifr.contentWindow && !isHtmlStory(story)){
+      ifr.contentWindow.postMessage({ mmInsets: chromeInsets() }, '*');
     }
   }
-  reader.querySelector('[data-r-collapse]').addEventListener('click', ()=>setCollapsed(true));
-  peek.addEventListener('click', ()=>setCollapsed(false));
+  reader.querySelector('[data-r-collapse]').addEventListener('click', ()=>setImmersive(true));
+  peek.addEventListener('click', ()=>setImmersive(false));
+  // A downward flick anywhere in the trigger zone works too, for people who
+  // swipe rather than tap.
+  let peekTouchY = null;
+  peek.addEventListener('touchstart', (e)=>{ peekTouchY = e.touches[0].clientY; }, {passive:true});
+  peek.addEventListener('touchend', (e)=>{
+    if(peekTouchY !== null && e.changedTouches[0].clientY - peekTouchY > 12) setImmersive(false);
+    peekTouchY = null;
+  }, {passive:true});
+
+  /* Reading position. Saved as a ratio (and the page index when the pagination
+     still matches), debounced because it lands in IndexedDB. */
+  let progressTimer = null;
+  let lastProgress = null;
+  function rememberProgress(p){
+    lastProgress = { episodeId: entry.id, ratio: p.ratio || 0 };
+    if(p.page !== undefined){ lastProgress.page = p.page; lastProgress.total = p.total; }
+    clearTimeout(progressTimer);
+    progressTimer = setTimeout(async ()=>{
+      const fresh = await dbGet('stories', story.id);
+      if(!fresh) return;
+      fresh.progress = lastProgress;
+      story.progress = lastProgress;
+      await dbPut('stories', fresh);   // no updatedAt bump: reading is not editing
+    }, 700);
+  }
 
   function onMessage(e){
     if(!e.data) return;
-    if(e.data.mmReaderToggle){ setCollapsed(!topbar.classList.contains('collapsed')); }
+    if(e.data.mmReaderToggle){ setImmersive(!immersive); }
     if(e.data.mmReaderPage){
       const ind = reader.querySelector('#pageIndicator');
       if(ind) ind.textContent = (e.data.index+1) + ' / ' + e.data.total;
     }
+    if(e.data.mmProgress) rememberProgress(e.data);
   }
   window.addEventListener('message', onMessage);
 
-  function closeReader(){
+  function onKey(e){
+    if(e.key === 'Escape'){
+      if(immersive){ setImmersive(false); e.preventDefault(); }
+      else closeReader();
+    }
+  }
+  window.addEventListener('keydown', onKey);
+
+  async function closeReader(){
     window.removeEventListener('message', onMessage);
+    window.removeEventListener('keydown', onKey);
+    // Flush a pending position write instead of dropping it on the floor.
+    if(progressTimer){
+      clearTimeout(progressTimer);
+      progressTimer = null;
+      if(lastProgress){
+        const fresh = await dbGet('stories', story.id);
+        if(fresh){ fresh.progress = lastProgress; story.progress = lastProgress; await dbPut('stories', fresh); }
+      }
+    }
+    unlockPageScroll();
     reader.classList.remove('open');
     setTimeout(()=>reader.remove(), 260);
+    if(parentOverlay && document.body.contains(parentOverlay)) await paintDetail(parentOverlay, story);
   }
   reader.querySelector('[data-r-back]').addEventListener('click', closeReader);
 
   function paintRendered(){
-    setCollapsed(false);
+    setImmersive(false);
     const body = reader.querySelector('#readerBody');
     const rs = story.readerSettings || {};
     // Paged layout is a text-typesetting feature; an HTML work lays itself out.
     const isPaginate = !isHtmlStory(story) && isPaginatedEffect(rs.pageEffect || 'scroll');
     // The nav bar is optional: with it off you page by swiping or tapping the
     // left/right edge, which is what most people want on a phone.
-    const wantNav = isPaginate && rs.showPageNav !== false;
+    wantNav = isPaginate && rs.showPageNav !== false;
     pagenav.style.display = wantNav ? 'flex' : 'none';
     pagenav.classList.remove('collapsed');
     // The iframe fills the whole overlay and the chrome floats on top of it,
     // so measure the chrome now and let the document reserve that much room.
-    const insets = {
-      top: topbar.offsetHeight || 54,
-      bottom: wantNav ? (pagenav.offsetHeight || 48) : safeAreaInset('bottom')
-    };
+    const insets = chromeInsets();
+    const saved = (story.progress && story.progress.episodeId === entry.id) ? story.progress : null;
     // A fresh iframe every time: replacing srcdoc on the existing one would let
     // the previous document's timers and listeners live on during teardown.
-    const doc = isHtmlStory(story) ? buildHtmlDoc(entry, story, insets) : buildReaderDoc(entry, story, insets);
+    const doc = isHtmlStory(story) ? buildHtmlDoc(entry, story, insets) : buildReaderDoc(entry, story, insets, saved);
     body.innerHTML = `<iframe id="readerIframe" sandbox="allow-scripts" srcdoc="${escapeAttr(doc)}"></iframe>`;
   }
 
   function paintEdit(){
-    setCollapsed(false);
+    setImmersive(false);
     const body = reader.querySelector('#readerBody');
     pagenav.style.display = 'none';
     const isExtra = entry.type === 'extra';
