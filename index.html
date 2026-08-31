@@ -502,6 +502,13 @@ body.mm-locked{overflow:hidden;}
       <div class="hint-text" style="margin:-4px 0 8px;">长篇正文太长时,用这里配置的接口和提示词生成前文总结,方便继续续写。</div>
       <div class="entry-list" id="summaryPresetList"></div>
 
+      <div class="section-title" style="display:flex; align-items:center; gap:8px;">
+        <span>AI 文本标注</span>
+        <button class="btn ghost sm" id="addAnnotatePresetBtn" style="margin-left:auto;">+ 新建</button>
+      </div>
+      <div class="hint-text" style="margin:-4px 0 8px;">可选的增强:朗读前让 AI 判断哪些是旁白、哪些是角色对白。不配也能读——默认用引号和角色名的规则识别,AI 挂了也会自动退回规则。</div>
+      <div class="entry-list" id="annotatePresetList"></div>
+
       <div class="section-title">数据备份</div>
       <div class="settings-row">
         <div class="row-title">导出 / 导入整体设置</div>
@@ -693,7 +700,8 @@ function makeReaderSettings(over){
   return Object.assign({
     background:'', pageEffect:'scroll', showPageNav:true,
     customCss:'', fontUrl:'',
-    voicePresetId:'', summaryPresetId:'',
+    voicePresetId:'', summaryPresetId:'', annotatePresetId:'',
+    narrationMode:'tts', narrationPresetId:'', narrationVoiceId:'', systemVoiceURI:'', systemRate:1,
     textOffsetX:0, textOffsetY:0, fontScale:100,
     ruleStyle:'none', ruleGap:34, ruleOffset:0
   }, over || {});
@@ -880,6 +888,7 @@ function switchTab(tab){
   if(tab === 'settings'){
     if(typeof refreshVoicePresets === 'function') refreshVoicePresets();
     if(typeof refreshSummaryPresets === 'function') refreshSummaryPresets();
+    if(typeof refreshAnnotatePresets === 'function') refreshAnnotatePresets();
   }
 }
 
@@ -1645,6 +1654,7 @@ async function getPresetsByKind(kind){
 function initPresets(){
   document.getElementById('addVoicePresetBtn').addEventListener('click', ()=>openVoicePresetEditor(null));
   document.getElementById('addSummaryPresetBtn').addEventListener('click', ()=>openSummaryPresetEditor(null));
+  document.getElementById('addAnnotatePresetBtn').addEventListener('click', ()=>openAnnotatePresetEditor(null));
 }
 async function refreshVoicePresets(){
   const list = document.getElementById('voicePresetList');
@@ -2285,6 +2295,204 @@ async function fetchModelList(preset){
   return list.sort((a,b)=>a.id.localeCompare(b.id));
 }
 
+/* ================= Speaker detection =================
+   Layer one is plain rules, and it is the layer everything else falls back to.
+   It never calls anything, never fails, and is always good enough to read with:
+   quoted spans are dialogue, the rest is narration, and a `名字：` prefix (or a
+   name immediately before the quote) attributes the line to a character. */
+const QUOTE_PAIRS = [['“','”'], ['「','」'], ['『','』'], ['"','"'], ['‘','’']];
+const SPEAKER_PREFIX = /^\s*([^\s:：""“「『（(]{1,14}?)\s*[:：]\s*/;
+
+function segmentByRules(plainText, knownNames){
+  const names = (knownNames || []).filter(Boolean);
+  const segments = [];
+  const push = (type, text, character)=>{
+    const t = (text||'').trim();
+    if(!t) return;
+    const last = segments[segments.length-1];
+    // Merge touching runs of the same speaker so the TTS gets whole sentences.
+    if(last && last.type === type && (last.character||'') === (character||'')) last.text += (type==='narration' ? ' ' : '') + t;
+    else segments.push({ type, text: t, character: character || '' });
+  };
+  // "角色B笑了笑，说：" and "…”角色A低声说。" both name a speaker; look on both
+  // sides of the quote and ignore the punctuation in between.
+  const nameNear = (text, fromEnd)=>{
+    const window = fromEnd ? String(text).slice(-16) : String(text).slice(0, 16);
+    let best = '', bestPos = -1;
+    names.forEach(n=>{
+      const pos = fromEnd ? window.lastIndexOf(n) : window.indexOf(n);
+      if(pos < 0) return;
+      // nearest to the quote wins
+      if(bestPos < 0 || (fromEnd ? pos > bestPos : pos < bestPos)){ best = n; bestPos = pos; }
+    });
+    return best;
+  };
+
+  (plainText||'').split(/\n+/).forEach(rawLine=>{
+    let line = rawLine.trim();
+    if(!line) return;
+    let speaker = '';
+    const m = line.match(SPEAKER_PREFIX);
+    if(m){
+      const cand = m[1];
+      // Accept a known character name outright; otherwise only a short token,
+      // so "第二天：天亮了" does not become a speaker called 第二天.
+      if(names.includes(cand) || cand.length <= 6){ speaker = cand; line = line.slice(m[0].length); }
+    }
+
+    // Locate every quoted span first, so each one can look at what follows it
+    // as well as what precedes it.
+    const spans = [];
+    let i = 0;
+    while(i < line.length){
+      const pair = QUOTE_PAIRS.find(pr=>pr[0] === line[i]);
+      if(pair){
+        const close = line.indexOf(pair[1], i + 1);
+        if(close > i){ spans.push([i, close]); i = close + 1; continue; }
+      }
+      i++;
+    }
+
+    if(!spans.length){
+      if(speaker) push('dialogue', line, speaker);
+      else push('narration', line);
+      return;
+    }
+    let cursor = 0;
+    spans.forEach(([open, close], idx)=>{
+      const before = line.slice(cursor, open);
+      const after = line.slice(close + 1, spans[idx+1] ? spans[idx+1][0] : line.length);
+      const who = speaker || nameNear(before, true) || nameNear(after, false);
+      push('narration', before);
+      push('dialogue', line.slice(open + 1, close), who);
+      cursor = close + 1;
+    });
+    push('narration', line.slice(cursor));
+  });
+  return segments.length ? segments : [{ type:'narration', text:(plainText||'').trim(), character:'' }];
+}
+
+/* ================= AI annotation (optional layer) =================
+   Strictly an enhancement over segmentByRules. Every failure path — no preset,
+   bad key, missing model, network down, malformed JSON, or output that does not
+   match the source text — returns the rule result instead. The reader must stay
+   usable with the annotation API completely broken. */
+const DEFAULT_ANNOTATE_PROMPT = `你是一个文本标注器。把用户给出的小说正文切分成有序片段,判断每段是旁白还是角色对白。
+要求:
+1. 只输出 JSON 数组,不要任何解释、前言或 Markdown 代码块标记。
+2. 数组每项格式: {"type":"narration"|"dialogue","character":"角色名或空字符串","text":"原文片段"}
+3. text 必须是原文中的连续片段,不要改写、翻译、补充或删减任何字。
+4. 把所有片段按原文顺序拼起来,必须能还原出完整原文。
+5. 引号内的说话内容是 dialogue,并尽量根据上下文判断说话人填进 character;判断不出来就填空字符串。
+6. 其余叙述、描写、心理活动都是 narration,character 填空字符串。`;
+
+function extractJsonArray(raw){
+  const text = String(raw || '').replace(/^\s*```(?:json)?/i, '').replace(/```\s*$/, '').trim();
+  try{ return JSON.parse(text); }catch(e){}
+  const start = text.indexOf('[');
+  const end = text.lastIndexOf(']');
+  if(start >= 0 && end > start){
+    try{ return JSON.parse(text.slice(start, end + 1)); }catch(e){}
+  }
+  return null;
+}
+/* Guard against a model that paraphrases or drops text: compare the annotation
+   against the source with punctuation and whitespace removed. If it lost or
+   invented a meaningful amount, the annotation is not trustworthy. */
+function annotationCoversSource(segments, source){
+  const strip = (t)=> String(t||'').replace(/[\s　\p{P}]/gu, '');
+  const src = strip(source);
+  const got = strip(segments.map(s=>s.text).join(''));
+  if(!src.length) return true;
+  return got.length >= src.length * 0.9 && got.length <= src.length * 1.15;
+}
+async function callAnnotateApi(preset, text){
+  const headers = buildPresetHeaders(preset);
+  const body = JSON.stringify({
+    model: preset.model || 'gpt-4o-mini',
+    temperature: 0,
+    messages: [
+      { role:'system', content: preset.promptTemplate || DEFAULT_ANNOTATE_PROMPT },
+      { role:'user', content: text }
+    ]
+  });
+  let res;
+  try{ res = await fetch(preset.endpoint, { method:'POST', headers, body }); }
+  catch(e){ throw new ApiError('请求发不出去(可能是 CORS 或地址有误)'); }
+  const raw = await res.text();
+  if(!res.ok) throw new ApiError('接口返回错误状态 ' + res.status, raw);
+  let json;
+  try{ json = JSON.parse(raw); }catch(e){ throw new ApiError('响应不是 JSON', raw); }
+  const content = pickSummaryText(json);
+  if(!content) throw new ApiError('响应里找不到模型输出', raw);
+  const arr = extractJsonArray(content);
+  if(!Array.isArray(arr) || !arr.length) throw new ApiError('模型没有返回合法的 JSON 数组', content);
+  const segments = arr
+    .filter(it=> it && typeof it.text === 'string' && it.text.trim())
+    .map(it=>({
+      type: it.type === 'dialogue' ? 'dialogue' : 'narration',
+      character: typeof it.character === 'string' ? it.character.trim() : '',
+      text: it.text.trim()
+    }));
+  if(!segments.length) throw new ApiError('模型返回的数组里没有可用片段', content);
+  if(!annotationCoversSource(segments, text)) throw new ApiError('模型改写或漏掉了原文,已放弃这次标注', content.slice(0, 2000));
+  return segments;
+}
+/* The single entry point the player uses. Never throws. */
+async function annotateSegments(text, names, story){
+  const rs = (story && story.readerSettings) || {};
+  const rules = segmentByRules(text, names);
+  if(!rs.annotatePresetId) return rules;
+  let preset = null;
+  try{ preset = await dbGet('presets', rs.annotatePresetId); }catch(e){}
+  if(!preset || preset.kind !== 'annotate' || !preset.endpoint) return rules;
+  try{
+    const ai = await callAnnotateApi(preset, text);
+    return ai;
+  }catch(err){
+    // Loud enough to notice, quiet enough not to block reading.
+    console.warn('[meow] AI 标注失败,已退回规则识别:', err && err.message);
+    showToast('AI标注失败,已用规则识别继续朗读');
+    return rules;
+  }
+}
+
+/* ================= TTS engine =================
+   Deliberately knows nothing about the reader: it is handed a list of
+   {type, character, text} segments and a resolver that says which voice each
+   one uses. Swapping provider, or adding a new one, does not touch this. */
+const NARRATION_MODES = { tts:'用 TTS 朗读', system:'用系统语音朗读', off:'不朗读旁白' };
+
+async function buildVoicePlan(story, segments){
+  const rs = story.readerSettings || {};
+  const [characters, bindings, presets] = await Promise.all([
+    getAllCharacters(), dbGetAll('voiceBindings'), getPresetsByKind('voice')
+  ]);
+  const presetById = new Map(presets.map(p=>[p.id, p]));
+  const charByName = new Map();
+  characters.forEach(c=> charByName.set(c.name, c));
+  (story.participants||[]).forEach(p=>{ if(p.name && p.characterId && !charByName.has(p.name)) charByName.set(p.name, {id:p.characterId, name:p.name}); });
+  const bindingByChar = new Map(bindings.map(b=>[b.characterId, b]));
+
+  const narrationMode = rs.narrationMode || 'tts';
+  const fallbackPreset = presetById.get(rs.voicePresetId) || null;
+
+  return segments.map(seg=>{
+    if(seg.type === 'narration'){
+      if(narrationMode === 'off') return Object.assign({}, seg, { voice:{ kind:'skip' } });
+      if(narrationMode === 'system') return Object.assign({}, seg, { voice:{ kind:'system', voiceURI: rs.systemVoiceURI||'', rate: rs.systemRate||1 } });
+      const preset = presetById.get(rs.narrationPresetId) || fallbackPreset;
+      return Object.assign({}, seg, { voice: preset ? { kind:'api', preset, voiceId: rs.narrationVoiceId||'' } : { kind:'skip' } });
+    }
+    // dialogue: the character's own binding wins, wherever the story came from
+    const ch = seg.character ? charByName.get(seg.character) : null;
+    const binding = ch ? bindingByChar.get(ch.id) : null;
+    const preset = (binding && presetById.get(binding.presetId)) || fallbackPreset;
+    if(!preset) return Object.assign({}, seg, { voice:{ kind:'skip' } });
+    return Object.assign({}, seg, { voice:{ kind:'api', preset, voiceId: (binding && binding.voiceId) || '' } });
+  });
+}
+
 /* ---------- floating player ---------- */
 let ttsSession = null;
 function ensureAudioBar(){
@@ -2301,27 +2509,37 @@ function ensureAudioBar(){
   `;
   document.body.appendChild(bar);
   bar.querySelector('#abStop').addEventListener('click', stopReadAloud);
-  bar.querySelector('#abToggle').addEventListener('click', ()=>{
-    if(!ttsSession || !ttsSession.audio) return;
-    if(ttsSession.audio.paused) ttsSession.audio.play().catch(()=>{});
-    else ttsSession.audio.pause();
-    paintAudioBar();
-  });
+  bar.querySelector('#abToggle').addEventListener('click', togglePlayback);
   return bar;
+}
+function togglePlayback(){
+  const s = ttsSession;
+  if(!s) return;
+  if(s.paused){
+    s.paused = false;
+    if(s.mode === 'system'){ try{ speechSynthesis.resume(); }catch(e){} }
+    else s.audio.play().catch(()=>{});
+  }else{
+    s.paused = true;
+    if(s.mode === 'system'){ try{ speechSynthesis.pause(); }catch(e){} }
+    else s.audio.pause();
+  }
+  paintAudioBar();
 }
 function paintAudioBar(){
   const bar = document.getElementById('audioBar');
   if(!bar || !ttsSession) return;
   const s = ttsSession;
   bar.querySelector('#abTitle').textContent = s.title || '朗读中';
-  const pos = (s.index+1) + '/' + s.chunks.length + ' 段';
+  const who = s.segments[s.index] ? (s.segments[s.index].character || (s.segments[s.index].type === 'narration' ? '旁白' : '对白')) : '';
+  const pos = (s.index+1) + '/' + s.segments.length;
   const label = s.status === 'loading' ? ('正在合成 ' + pos)
     : s.status === 'done' ? '朗读完毕'
-    : (s.audio && s.audio.paused) ? ('已暂停 · ' + pos)
-    : ('朗读中 · ' + pos);
+    : s.paused ? ('已暂停 · ' + who + ' ' + pos)
+    : ('朗读中 · ' + who + ' ' + pos);
   bar.querySelector('#abStatus').textContent = label;
   const toggle = bar.querySelector('#abToggle');
-  toggle.innerHTML = (s.audio && !s.audio.paused) ? ICONS.pause : ICONS.play;
+  toggle.innerHTML = s.paused ? ICONS.play : ICONS.pause;
   toggle.disabled = s.status === 'loading' || s.status === 'done';
 }
 function stopReadAloud(){
@@ -2330,28 +2548,74 @@ function stopReadAloud(){
   if(s){
     s.cancelled = true;
     if(s.audio){ try{ s.audio.pause(); }catch(e){} s.audio.removeAttribute('src'); }
+    try{ speechSynthesis.cancel(); }catch(e){}
     s.objectUrls.forEach(u=>{ try{ URL.revokeObjectURL(u); }catch(e){} });
   }
   const bar = document.getElementById('audioBar');
   if(bar) bar.classList.remove('show');
 }
-async function playTtsChunk(session, i){
+function speakWithSystemVoice(session, seg){
+  return new Promise((resolve, reject)=>{
+    if(!('speechSynthesis' in window)) return reject(new ApiError('这个浏览器不支持系统语音'));
+    const u = new SpeechSynthesisUtterance(seg.text);
+    u.rate = seg.voice.rate || 1;
+    if(seg.voice.voiceURI){
+      const v = speechSynthesis.getVoices().find(x=>x.voiceURI === seg.voice.voiceURI);
+      if(v) u.voice = v;
+    }
+    let settled = false;
+    const finish = (fn, arg)=>{
+      if(settled) return;
+      settled = true;
+      clearTimeout(watchdog);
+      clearInterval(keepAlive);
+      fn(arg);
+    };
+    /* speechSynthesis is unreliable: with no installed voices, or after the
+       long-utterance stall Chrome is known for, `onend` may simply never fire.
+       Without a watchdog the whole queue would hang, so cap each utterance at a
+       generous estimate of its own length and move on. */
+    const budget = 4000 + seg.text.length * 220 / (u.rate || 1);
+    const watchdog = setTimeout(()=>{ try{ speechSynthesis.cancel(); }catch(e){} finish(resolve); }, budget);
+    // Chrome pauses synthesis after ~15s unless nudged.
+    const keepAlive = setInterval(()=>{
+      if(session.paused || session.cancelled) return;
+      try{ speechSynthesis.resume(); }catch(e){}
+    }, 8000);
+    u.onend = ()=> finish(resolve);
+    u.onerror = (e)=> (e && e.error === 'interrupted') ? finish(resolve) : finish(reject, new ApiError('系统语音朗读失败'));
+    session.mode = 'system';
+    try{ speechSynthesis.speak(u); }
+    catch(e){ finish(reject, new ApiError('系统语音朗读失败')); }
+  });
+}
+async function playSegment(session, i){
   if(session.cancelled || ttsSession !== session) return;
-  if(i >= session.chunks.length){
+  if(i >= session.segments.length){
     session.status = 'done';
     paintAudioBar();
     setTimeout(()=>{ if(ttsSession === session) stopReadAloud(); }, 1800);
     return;
   }
   session.index = i;
+  const seg = session.segments[i];
+  if(seg.voice.kind === 'skip') return playSegment(session, i + 1);
+
   session.status = 'loading';
   paintAudioBar();
   try{
-    const { src, revoke } = await synthesizeChunk(session.preset, session.chunks[i]);
-    if(session.cancelled || ttsSession !== session){
-      if(revoke) URL.revokeObjectURL(src);
-      return;
+    if(seg.voice.kind === 'system'){
+      session.status = 'playing';
+      paintAudioBar();
+      await speakWithSystemVoice(session, seg);
+      if(session.cancelled || ttsSession !== session) return;
+      return playSegment(session, i + 1);
     }
+    session.mode = 'api';
+    // The binding may override the preset's own voice id, so pass a shallow copy.
+    const preset = seg.voice.voiceId ? Object.assign({}, seg.voice.preset, { voiceId: seg.voice.voiceId }) : seg.voice.preset;
+    const { src, revoke } = await synthesizeChunk(preset, seg.text);
+    if(session.cancelled || ttsSession !== session){ if(revoke) URL.revokeObjectURL(src); return; }
     if(revoke) session.objectUrls.push(src);
     session.audio.src = src;
     session.status = 'playing';
@@ -2364,7 +2628,10 @@ async function playTtsChunk(session, i){
     showApiErrorModal('朗读失败', err);
   }
 }
-function startReadAloud(story, entry){
+
+/* `opts` picks what to read: whole episode, one paragraph, from a paragraph
+   onward, or an arbitrary selection. */
+function startReadAloud(story, entry, opts){
   const audio = new Audio();
   audio.preload = 'auto';
   /* Safari only unlocks an <audio> element for later programmatic playback if
@@ -2372,28 +2639,47 @@ function startReadAloud(story, entry){
      request happens after several awaits — so prime it here, synchronously. */
   try{ const pr = audio.play(); if(pr && pr.catch) pr.catch(()=>{}); }catch(e){}
   return (async ()=>{
+    const o = opts || {};
+    let text;
+    if(o.text) text = o.text;
+    else {
+      const full = plainTextFromContent(entry.content || '');
+      if(o.fromParagraph !== undefined || o.onlyParagraph !== undefined){
+        const paras = full.split(/\n\s*\n/);
+        const idx = o.onlyParagraph !== undefined ? o.onlyParagraph : o.fromParagraph;
+        text = o.onlyParagraph !== undefined ? (paras[idx] || '') : paras.slice(idx).join('\n\n');
+      } else text = full;
+    }
+    if(!text || !text.trim()){ showToast('没有可朗读的内容'); return; }
+
     const rs = story.readerSettings || {};
-    const preset = rs.voicePresetId ? await dbGet('presets', rs.voicePresetId) : null;
-    if(!preset || preset.kind !== 'voice'){ showToast('请先在阅读设置里选一个语音预设'); return; }
-    if(!preset.endpoint){ showToast('这个语音预设还没有填接口地址'); return; }
-    const text = plainTextFromContent(entry.content || '');
-    if(!text){ showToast('这条内容没有可朗读的正文'); return; }
+    const names = [...new Set((story.participants||[]).map(p=>p.name).filter(Boolean))];
+    let segments = await annotateSegments(text, names, story);
+    const chunkLimit = 1500;
+    // Long segments still have to respect the provider's length limit.
+    const expanded = [];
+    segments.forEach(seg=>{
+      chunkText(seg.text, chunkLimit).forEach(part=> expanded.push(Object.assign({}, seg, { text: part })));
+    });
+    const planned = await buildVoicePlan(story, expanded);
+    if(planned.every(p=>p.voice.kind === 'skip')){
+      showToast(rs.narrationMode === 'off' ? '只有旁白,而旁白设置成不朗读' : '请先在阅读设置里选一个语音预设');
+      return;
+    }
+
     stopReadAloud();
     const session = {
-      cancelled:false, preset, audio, objectUrls:[], index:0, status:'loading',
-      title: entry.title, chunks: chunkText(text, preset.chunkSize)
+      cancelled:false, audio, objectUrls:[], index:0, status:'loading', paused:false, mode:'api',
+      title: entry.title, segments: planned
     };
     ttsSession = session;
-    audio.addEventListener('ended', ()=>{ if(ttsSession === session) playTtsChunk(session, session.index + 1); });
-    audio.addEventListener('play', paintAudioBar);
-    audio.addEventListener('pause', paintAudioBar);
+    audio.addEventListener('ended', ()=>{ if(ttsSession === session && !session.paused) playSegment(session, session.index + 1); });
     ensureAudioBar().classList.add('show');
     paintAudioBar();
-    await playTtsChunk(session, 0);
+    await playSegment(session, 0);
   })();
 }
 
-/* ---------- summary ---------- */
 const DEFAULT_SUMMARY_PROMPT = '你是一个小说编辑助手。请把用户给出的正文压缩成一份"前情提要",保留关键人物关系、已经发生的重要事件、当前所处的情境,以及尚未解决的悬念和伏笔。用中文叙述,不要分析和评论,直接输出提要正文。';
 
 function pickSummaryText(j){
@@ -2547,6 +2833,119 @@ async function openSummarySheet(story, entry){
   }
 }
 
+async function refreshAnnotatePresets(){
+  const list = document.getElementById('annotatePresetList');
+  if(!list) return;
+  const presets = await getPresetsByKind('annotate');
+  if(!presets.length){ list.innerHTML = `<div class="hint-text">还没有标注预设(不配也能正常朗读)</div>`; return; }
+  list.innerHTML = presets.map(p=>`
+    <div class="entry-item" data-annotate="${p.id}">
+      <div class="t">${escapeHtml(p.name)}</div>
+      <div class="m">${escapeHtml(p.model||'')} ${p.model?'·':''} ${escapeHtml(p.endpoint||'未填写接口')}</div>
+    </div>`).join('');
+  list.querySelectorAll('[data-annotate]').forEach(el=>{
+    el.addEventListener('click', ()=> openAnnotatePresetEditor(presets.find(p=>p.id===el.dataset.annotate)));
+  });
+}
+async function openAnnotatePresetEditor(preset){
+  const isNew = !preset;
+  const overlay = openModal(`
+    <div class="modal-header"><h2>${isNew?'新建':'编辑'}标注预设</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+    <div class="modal-body">
+      <label class="field-label">预设名称</label>
+      <input type="text" id="apName2" value="${escapeAttr(preset?.name||'')}" placeholder="例如: 对白标注">
+      <label class="field-label">快捷配置</label>
+      <div class="chip-row">
+        ${LLM_PROVIDERS.map(pv=>`<button class="choice-chip" data-allm="${pv.id}">${escapeHtml(pv.name)}</button>`).join('')}
+      </div>
+      <label class="field-label">接口地址(Endpoint)</label>
+      <input type="text" id="apEndpoint" value="${escapeAttr(preset?.endpoint||'')}" placeholder="https://...">
+      <label class="field-label">API Key</label>
+      <input type="text" id="apApiKey" value="${escapeAttr(preset?.apiKey||'')}" placeholder="填你自己的密钥">
+      <label class="field-label">模型名称</label>
+      <input type="text" id="apModel" value="${escapeAttr(preset?.model||'')}" placeholder="例如: gpt-4o-mini">
+      <div class="btn-row">
+        <button class="btn sm" id="apFetchModels">拉取模型列表</button>
+        <button class="btn sm" id="apTest">测试连接</button>
+      </div>
+      <select id="apModelPick" style="display:none; margin-top:8px;"></select>
+      <div class="hint-text" id="apModelNote" style="display:none;"></div>
+
+      <label class="field-label">标注提示词(Prompt)</label>
+      <textarea id="apPrompt" style="min-height:180px; font-size:12.5px;">${escapeHtml(preset?.promptTemplate || DEFAULT_ANNOTATE_PROMPT)}</textarea>
+      <div class="btn-row"><button class="btn sm" id="apResetPrompt">恢复默认提示词</button></div>
+      <div class="hint-text">目标是让模型严格输出结构化标注,而不是自由聊天。输出对不上原文时会自动放弃这次标注、退回规则识别。</div>
+
+      <div class="btn-row"><button class="btn primary block" id="apSave">保存</button></div>
+      ${!isNew ? `<div class="btn-row"><button class="btn danger block" id="apDelete">删除预设</button></div>` : ''}
+    </div>`);
+  const q = (sel)=> overlay.querySelector(sel);
+  overlay.querySelector('[data-close]').addEventListener('click', ()=>closeModal(overlay));
+
+  let chosen = preset?.provider || '';
+  const paintChips = ()=> overlay.querySelectorAll('[data-allm]').forEach(b=>b.classList.toggle('selected', b.dataset.allm === chosen));
+  paintChips();
+  overlay.querySelectorAll('[data-allm]').forEach(b=>{
+    b.addEventListener('click', ()=>{
+      const pv = LLM_PROVIDERS.find(x=>x.id === b.dataset.allm);
+      if(!pv) return;
+      chosen = pv.id;
+      q('#apEndpoint').value = pv.endpoint || '';
+      q('#apModel').value = pv.model || '';
+      paintChips();
+      showToast(pv.id === 'custom' ? '已清空' : ('已填入 ' + pv.name));
+    });
+  });
+  const modelPick = q('#apModelPick');
+  modelPick.addEventListener('change', ()=>{ if(modelPick.value) q('#apModel').value = modelPick.value; });
+  q('#apFetchModels').addEventListener('click', async ()=>{
+    const btn = q('#apFetchModels'); btn.disabled = true; const label = btn.textContent; btn.textContent = '拉取中…';
+    try{
+      const list = await fetchModelList({ endpoint: q('#apEndpoint').value.trim(), apiKey: q('#apApiKey').value.trim() });
+      const cur = q('#apModel').value.trim();
+      modelPick.innerHTML = `<option value="">选择模型…</option>` +
+        list.map(m=>`<option value="${escapeAttr(m.id)}" ${m.id===cur?'selected':''}>${escapeHtml(m.id)}</option>`).join('');
+      modelPick.style.display = '';
+      const note = q('#apModelNote'); note.textContent = list.length + ' 个模型'; note.style.display = '';
+      showToast('拿到 ' + list.length + ' 个模型');
+    }catch(err){ showApiErrorModal('拉取模型列表失败', err); }
+    finally{ btn.disabled = false; btn.textContent = label; }
+  });
+  q('#apTest').addEventListener('click', async ()=>{
+    const btn = q('#apTest'); btn.disabled = true; const label = btn.textContent; btn.textContent = '测试中…';
+    try{
+      const segs = await callAnnotateApi({
+        endpoint: q('#apEndpoint').value.trim(), apiKey: q('#apApiKey').value.trim(),
+        model: q('#apModel').value.trim(), promptTemplate: q('#apPrompt').value
+      }, '他走到窗边。\n角色A：“你今天怎么来了？”');
+      showApiErrorModal('测试成功', { message: '模型返回了 ' + segs.length + ' 个片段', raw: JSON.stringify(segs, null, 2) });
+    }catch(err){ showApiErrorModal('测试失败', err); }
+    finally{ btn.disabled = false; btn.textContent = label; }
+  });
+  q('#apResetPrompt').addEventListener('click', ()=>{ q('#apPrompt').value = DEFAULT_ANNOTATE_PROMPT; showToast('已恢复默认提示词'); });
+  q('#apSave').addEventListener('click', async ()=>{
+    const name = q('#apName2').value.trim();
+    if(!name){ showToast('请填写预设名称'); return; }
+    await dbPut('presets', {
+      id: preset?.id || uid(), kind:'annotate', name, provider: chosen,
+      endpoint: q('#apEndpoint').value.trim(), apiKey: q('#apApiKey').value.trim(),
+      model: q('#apModel').value.trim(), promptTemplate: q('#apPrompt').value,
+      createdAt: preset?.createdAt || Date.now()
+    });
+    closeModal(overlay);
+    showToast('已保存');
+    await refreshAnnotatePresets();
+  });
+  const del = q('#apDelete');
+  if(del) del.addEventListener('click', async ()=>{
+    if(!confirm('删除这个标注预设?')) return;
+    await dbDelete('presets', preset.id);
+    closeModal(overlay);
+    showToast('已删除');
+    await refreshAnnotatePresets();
+  });
+}
+
 /* ================= Data backup ================= */
 function initDataBackup(){
   document.getElementById('exportDataBtn').addEventListener('click', exportAllData);
@@ -2566,6 +2965,7 @@ function initDataBackup(){
     await refreshMaterials();
     await refreshVoicePresets();
     await refreshSummaryPresets();
+    await refreshAnnotatePresets();
   });
 }
 async function exportAllData(){
@@ -3183,11 +3583,11 @@ async function openMoveStorySheet(parentOverlay, story){
 function renderContentHtml(raw){
   if(!raw) return '';
   const blocks = raw.split(/\n\s*\n/);
-  return blocks.map(block=>{
+  return blocks.map((block, i)=>{
     const trimmed = block.trim();
     if(!trimmed) return '';
     if(/^</.test(trimmed)) return `<div class="mm-html">${trimmed}</div>`;
-    return `<p class="mm-p">${escapeHtml(trimmed).replace(/\n/g,'<br>')}</p>`;
+    return `<p class="mm-p" data-mm-i="${i}">${escapeHtml(trimmed).replace(/\n/g,'<br>')}</p>`;
   }).join('\n');
 }
 function currentThemeVars(){
@@ -3338,6 +3738,49 @@ function buildReaderDoc(entry, story, insets, restore){
         pages.style.backgroundPosition = '0 ' + (t.ruleOffset|0) + 'px';
       }
     }
+    /* Manual picking: a long press names the paragraph under the finger, and a
+       normal text selection is reported as-is. This is the dependable path —
+       it works whatever the speaker detection thinks. */
+    function wireManualSelection(){
+      var timer = null, startX = 0, startY = 0, fired = false;
+      function paraIndexFrom(target){
+        var p = target && target.closest ? target.closest('.mm-p') : null;
+        return p && p.dataset.mmI !== undefined ? parseInt(p.dataset.mmI, 10) : -1;
+      }
+      function begin(x, y, target){
+        var idx = paraIndexFrom(target);
+        if(idx < 0) return;
+        startX = x; startY = y; fired = false;
+        clearTimeout(timer);
+        timer = setTimeout(function(){
+          fired = true;
+          parent.postMessage({ mmLongPress:true, index: idx }, '*');
+        }, 550);
+      }
+      function move(x, y){
+        if(Math.abs(x-startX) > 10 || Math.abs(y-startY) > 10) clearTimeout(timer);
+      }
+      function end(){ clearTimeout(timer); }
+      document.addEventListener('touchstart', function(e){ begin(e.touches[0].clientX, e.touches[0].clientY, e.target); }, {passive:true});
+      document.addEventListener('touchmove', function(e){ move(e.touches[0].clientX, e.touches[0].clientY); }, {passive:true});
+      document.addEventListener('touchend', end, {passive:true});
+      document.addEventListener('touchcancel', end, {passive:true});
+      document.addEventListener('mousedown', function(e){ if(e.button===0) begin(e.clientX, e.clientY, e.target); });
+      document.addEventListener('mousemove', function(e){ move(e.clientX, e.clientY); });
+      document.addEventListener('mouseup', end);
+      document.addEventListener('selectionchange', function(){
+        var sel = document.getSelection();
+        var text = sel ? String(sel).trim() : '';
+        parent.postMessage({ mmSelection:true, text: text }, '*');
+      });
+      // Swallow the click that ends a long press so it does not also page/toggle.
+      document.addEventListener('click', function(e){
+        if(fired){ fired = false; e.stopPropagation(); e.preventDefault(); }
+      }, true);
+    }
+    if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wireManualSelection);
+    else wireManualSelection();
+
     return { applyTypography: applyTypography, setVar: setVar };
   })();
   window.__mm.applyTypography(${JSON.stringify(typo)});
@@ -3841,7 +4284,9 @@ function openCopySheet(story, entry){
 /* ================= Reader appearance settings ================= */
 async function openReaderSettingsSheet(story, onSaved){
   const rs = story.readerSettings || (story.readerSettings = { background:'', pageEffect:'scroll', customCss:'', fontUrl:'' });
-  const [voicePresets, summaryPresets] = await Promise.all([getPresetsByKind('voice'), getPresetsByKind('summary')]);
+  const [voicePresets, summaryPresets, annotatePresets] = await Promise.all([
+    getPresetsByKind('voice'), getPresetsByKind('summary'), getPresetsByKind('annotate')
+  ]);
   const presetOptions = (list, selected)=> `<option value="">不使用</option>` + list.map(pr=>
     `<option value="${pr.id}" ${selected===pr.id?'selected':''}>${escapeHtml(pr.name)}</option>`).join('');
   const presets = [
@@ -3894,9 +4339,29 @@ async function openReaderSettingsSheet(story, onSaved){
       <textarea id="customCssInputR" style="min-height:90px;" placeholder="例如: .mm-p{ text-indent:2em; }">${escapeHtml(rs.customCss||'')}</textarea>
       ${cssHelpPanel('reader')}
 
-      <label class="field-label">朗读语音预设</label>
+      <div class="section-title" style="margin-top:16px;">朗读</div>
+      <label class="field-label">默认语音预设(没有单独绑定声音的角色用它)</label>
       <select id="voicePresetSelect">${presetOptions(voicePresets, rs.voicePresetId||'')}</select>
       ${voicePresets.length ? '' : `<div class="hint-text">还没有语音预设,去 设置 → 语音朗读 里新建一个。</div>`}
+
+      <label class="field-label">旁白怎么读</label>
+      <div class="chip-row">
+        ${Object.keys(NARRATION_MODES).map(k=>`<button class="choice-chip" data-narr="${k}">${NARRATION_MODES[k]}</button>`).join('')}
+      </div>
+      <div id="narrTtsBox">
+        <label class="field-label">旁白用的语音预设(留空则用上面的默认)</label>
+        <select id="narrPresetSelect">${presetOptions(voicePresets, rs.narrationPresetId||'')}</select>
+      </div>
+      <div id="narrSysBox">
+        <label class="field-label">系统语音(不消耗任何 API)</label>
+        <select id="narrSysVoice"></select>
+        <label class="slider-row"><span>语速</span><input type="range" id="narrRate" min="50" max="200" step="5" value="${Math.round((rs.systemRate||1)*100)}"><b id="narrRateVal">${Math.round((rs.systemRate||1)*100)}%</b></label>
+      </div>
+      <div class="hint-text">角色对白的声音在「角色 → 声音绑定」里设,绑定跟着角色走,同一个角色在任何故事里都用同一个声音。</div>
+
+      <label class="field-label">AI 文本标注(可选)</label>
+      <select id="annotatePresetSelect">${presetOptions(annotatePresets, rs.annotatePresetId||'')}</select>
+      <div class="hint-text">不选就用引号和角色名的规则识别。选了之后 AI 失败会自动退回规则识别,不会让朗读用不了。</div>
 
       ${story.kind !== 'html' ? `
         <label class="field-label">前文总结预设</label>
@@ -3975,6 +4440,34 @@ async function openReaderSettingsSheet(story, onSaved){
   }
   paintSwatches();
 
+  /* Narration has three independent modes; only the relevant controls show. */
+  let narrationMode = NARRATION_MODES[rs.narrationMode] ? rs.narrationMode : 'tts';
+  const narrTtsBox = overlay.querySelector('#narrTtsBox');
+  const narrSysBox = overlay.querySelector('#narrSysBox');
+  const sysVoiceSel = overlay.querySelector('#narrSysVoice');
+  function fillSystemVoices(){
+    const voices = ('speechSynthesis' in window) ? speechSynthesis.getVoices() : [];
+    if(!voices.length){
+      sysVoiceSel.innerHTML = `<option value="">(浏览器还没报告可用语音,选中这个模式后再回来看)</option>`;
+      return;
+    }
+    sysVoiceSel.innerHTML = `<option value="">跟随系统默认</option>` + voices.map(v=>
+      `<option value="${escapeAttr(v.voiceURI)}" ${rs.systemVoiceURI===v.voiceURI?'selected':''}>${escapeHtml(v.name)} (${escapeHtml(v.lang)})</option>`).join('');
+  }
+  fillSystemVoices();
+  if('speechSynthesis' in window) speechSynthesis.addEventListener('voiceschanged', fillSystemVoices);
+  function paintNarration(){
+    overlay.querySelectorAll('[data-narr]').forEach(b=>b.classList.toggle('selected', b.dataset.narr === narrationMode));
+    narrTtsBox.style.display = narrationMode === 'tts' ? '' : 'none';
+    narrSysBox.style.display = narrationMode === 'system' ? '' : 'none';
+  }
+  paintNarration();
+  overlay.querySelectorAll('[data-narr]').forEach(b=>{
+    b.addEventListener('click', ()=>{ narrationMode = b.dataset.narr; paintNarration(); });
+  });
+  const rateEl = overlay.querySelector('#narrRate');
+  rateEl.addEventListener('input', ()=>{ overlay.querySelector('#narrRateVal').textContent = rateEl.value + '%'; });
+
   let chosenEffect = PAGE_EFFECTS.some(ef=>ef.id === rs.pageEffect) ? rs.pageEffect : 'scroll';
   const navRow = overlay.querySelector('#pageNavRow');
   const navHint = overlay.querySelector('#pageNavHint');
@@ -4003,6 +4496,11 @@ async function openReaderSettingsSheet(story, onSaved){
       customCss: overlay.querySelector('#customCssInputR').value,
       fontUrl: overlay.querySelector('#fontUrlInput').value.trim(),
       voicePresetId: (overlay.querySelector('#voicePresetSelect')||{}).value || '',
+      narrationMode,
+      narrationPresetId: (overlay.querySelector('#narrPresetSelect')||{}).value || '',
+      systemVoiceURI: sysVoiceSel.value || '',
+      systemRate: parseInt(rateEl.value, 10) / 100,
+      annotatePresetId: (overlay.querySelector('#annotatePresetSelect')||{}).value || '',
       summaryPresetId: (overlay.querySelector('#summaryPresetSelect')||{}).value || ''
     };
     story.updatedAt = Date.now();
@@ -4109,6 +4607,28 @@ function openReaderPage(parentOverlay, story, entryId){
       if(ind) ind.textContent = (e.data.index+1) + ' / ' + e.data.total;
     }
     if(e.data.mmProgress) rememberProgress(e.data);
+    if(e.data.mmSelection) lastSelection = e.data.text || '';
+    if(e.data.mmLongPress) openReadFromHereSheet(e.data.index);
+  }
+  let lastSelection = '';
+  /* The dependable fallback the spec asks for: pick what to read by hand. */
+  function openReadFromHereSheet(paragraphIndex){
+    const sel = lastSelection;
+    const sheet = openModal(`
+      <div class="modal-header"><h2>朗读</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+      <div class="modal-body">
+        ${sel ? `<div class="action-sheet-item" id="readSel"><div class="glyph">${ICONS.speaker}</div>
+          <div class="txt"><div class="t1">朗读选中的文字</div><div class="t2">${escapeHtml(sel.length>40?sel.slice(0,40)+'…':sel)}</div></div></div>` : ''}
+        <div class="action-sheet-item" id="readOne"><div class="glyph">${ICONS.speaker}</div>
+          <div class="txt"><div class="t1">只朗读这一段</div></div></div>
+        <div class="action-sheet-item" id="readFrom"><div class="glyph">${ICONS.play}</div>
+          <div class="txt"><div class="t1">从这一段开始朗读</div><div class="t2">一直读到本篇结束</div></div></div>
+      </div>`);
+    sheet.querySelector('[data-close]').addEventListener('click', ()=>closeModal(sheet));
+    const selBtn = sheet.querySelector('#readSel');
+    if(selBtn) selBtn.addEventListener('click', ()=>{ closeModal(sheet); startReadAloud(story, entry, { text: sel }); });
+    sheet.querySelector('#readOne').addEventListener('click', ()=>{ closeModal(sheet); startReadAloud(story, entry, { onlyParagraph: paragraphIndex }); });
+    sheet.querySelector('#readFrom').addEventListener('click', ()=>{ closeModal(sheet); startReadAloud(story, entry, { fromParagraph: paragraphIndex }); });
   }
   window.addEventListener('message', onMessage);
 
@@ -4201,7 +4721,7 @@ function openReaderPage(parentOverlay, story, entryId){
       <div class="modal-body">
         <div class="action-sheet-item" id="moreEdit"><div class="glyph">${ICONS.edit}</div><div class="txt"><div class="t1">编辑正文</div></div></div>
         <div class="action-sheet-item" id="moreSettings"><div class="glyph">${ICONS.gear}</div><div class="txt"><div class="t1">阅读设置</div><div class="t2">背景 / 翻页方式 / 自定义CSS / 字体</div></div></div>
-        <div class="action-sheet-item" id="moreRead"><div class="glyph">${ICONS.speaker}</div><div class="txt"><div class="t1">朗读正文</div><div class="t2">用阅读设置里选的语音预设合成并播放</div></div></div>
+        <div class="action-sheet-item" id="moreRead"><div class="glyph">${ICONS.speaker}</div><div class="txt"><div class="t1">朗读正文</div><div class="t2">从头读起 · 长按正文某段可以只读那段或从那段开始</div></div></div>
         ${story.kind !== 'html' ? `<div class="action-sheet-item" id="moreSummary"><div class="glyph">${ICONS.sparkle}</div><div class="txt"><div class="t1">前文总结</div><div class="t2">用AI把前面的正文压成前情提要</div></div></div>` : ''}
         <div class="action-sheet-item" id="moreCopy"><div class="glyph">${ICONS.copy}</div><div class="txt"><div class="t1">一键复制</div><div class="t2">复制正文,方便去续写</div></div></div>
         <div class="action-sheet-item" id="moreDelete"><div class="glyph">${ICONS.trash}</div><div class="txt"><div class="t1" style="color:var(--danger);">删除这条</div></div></div>
@@ -4399,6 +4919,7 @@ function openEditStory(parentOverlay, story){
   await refreshMaterials();
   await refreshVoicePresets();
   await refreshSummaryPresets();
+  await refreshAnnotatePresets();
 })();
 </script>
 </body>
