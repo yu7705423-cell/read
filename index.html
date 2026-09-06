@@ -192,7 +192,13 @@ textarea{resize:vertical; min-height:80px; line-height:1.55;}
   display:flex; align-items:center; padding:14px 16px 10px; border-bottom:1px solid var(--border); position:sticky; top:0; background:var(--bg);
 }
 .modal-header h2{font-size:16px; margin:0; flex:1;}
-.modal-body{padding:6px 16px 20px; overflow-y:auto; overscroll-behavior:contain;}
+.modal-body{padding:6px 16px 20px; overflow-y:auto; overscroll-behavior:contain; flex:1; min-height:0;}
+/* Some sheets wrap their header+body in a mount div so they can be repainted
+   in place. That div is the flex child then, and its default min-height:auto
+   lets the content push it past the sheet — the body never becomes the
+   scroller and long lists run off the bottom of the screen. It has to carry
+   the column layout through. */
+.sheet-mount{display:flex; flex-direction:column; flex:1; min-height:0;}
 body.mm-locked{overflow:hidden;}
 .modal-close{background:none; border:none; font-size:18px; color:var(--ink-faint); cursor:pointer; padding:4px 8px;}
 
@@ -3639,7 +3645,7 @@ async function openCharacterDetail(characterId){
   ]);
   const mine = allStories.filter(st=>(st.characterId||'') === (characterId||''));
   const buckets = groupStoriesByInstruction(mine, instructions);
-  const overlay = openModal(`<div id="charMount"></div>`);
+  const overlay = openModal(`<div id="charMount" class="sheet-mount"></div>`);
   overlay.querySelector('.modal-sheet').style.maxHeight = '92vh';
   const name = character ? character.name : '未指定角色';
   overlay.querySelector('#charMount').innerHTML = `
@@ -3681,7 +3687,7 @@ async function openInstructionDetail(instructionId){
   if(!instruction) return;
   const mine = allStories.filter(st=>st.instructionId === instructionId);
   const buckets = groupStoriesByCharacter(mine, characters);
-  const overlay = openModal(`<div id="insMount"></div>`);
+  const overlay = openModal(`<div id="insMount" class="sheet-mount"></div>`);
   overlay.querySelector('.modal-sheet').style.maxHeight = '92vh';
   overlay.querySelector('#insMount').innerHTML = `
     <div class="modal-header"><h2>指令 / 系列</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
@@ -3858,7 +3864,7 @@ async function openVoiceBindingSheet(character){
 async function openStoryDetail(storyId, openEpisodeId){
   const story = await dbGet('stories', storyId);
   if(!story) return;
-  const overlay = openModal(`<div id="detailMount" style="max-height:100%;"></div>`);
+  const overlay = openModal(`<div id="detailMount" class="sheet-mount"></div>`);
   overlay.querySelector('.modal-sheet').style.maxHeight = '92vh';
   await paintDetail(overlay, story);
   if(openEpisodeId) openReaderPage(overlay, story, openEpisodeId);
