@@ -503,9 +503,9 @@ body.mm-locked{overflow:hidden;}
       <div class="section-title">导入</div>
       <label class="btn primary block" style="cursor:pointer; text-align:center;">
         选择文件导入
-        <input type="file" id="toolsFileInput" multiple accept=".txt,.md,.docx,.zip,.tar,.gz,.tgz" style="display:none;">
+        <input type="file" id="toolsFileInput" multiple accept=".txt,.md,.docx,.epub,.zip,.tar,.gz,.tgz" style="display:none;">
       </label>
-      <div class="hint-text" style="margin-top:8px;">支持 txt / docx / zip(自动解开内部嵌套的 zip)/ tar / tar.gz。这里导入的内容只是方便一键复制的素材,不会进书架。</div>
+      <div class="hint-text" style="margin-top:8px;">支持 txt / docx / epub / zip(自动解开内部嵌套的 zip)/ tar / tar.gz。单独选一本 txt 或 epub 会问你是进书架还是存成素材;其余都存成素材,方便一键复制。</div>
       <div id="toolsStatus" class="hint-text" style="display:none; margin-top:8px;"></div>
       <div class="section-title" style="display:flex; align-items:center; gap:6px;">
         <span>素材库(<span id="materialCount">0</span>)</span>
@@ -1152,11 +1152,11 @@ async function parseBookFile(file){
   return { title: base, author: '', chapters: splitTxtChapters(text) };
 }
 
-function openImportBookFlow(){
+function openImportBookFlow(presetFile){
   const overlay = openModal(`
     <div class="modal-header"><h2>导入书籍</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
     <div class="modal-body">
-      <label class="btn primary block" style="cursor:pointer; text-align:center;">
+      <label class="btn primary block" id="bookFilePick" style="cursor:pointer; text-align:center;">
         选择 txt / epub 文件
         <input type="file" id="bookFileInput" accept=".txt,.epub" style="display:none;">
       </label>
@@ -1177,8 +1177,8 @@ function openImportBookFlow(){
   const form = overlay.querySelector('#bookImportForm');
   let parsed = null;
 
-  overlay.querySelector('#bookFileInput').addEventListener('change', async (e)=>{
-    const f = e.target.files[0]; if(!f) return;
+  async function takeFile(f){
+    if(!f) return;
     status.textContent = '正在解析…';
     form.hidden = true;
     try{
@@ -1194,7 +1194,13 @@ function openImportBookFlow(){
       parsed = null;
       status.textContent = '解析失败:' + (err && err.message ? err.message : err);
     }
-  });
+  }
+  overlay.querySelector('#bookFileInput').addEventListener('change', (e)=>takeFile(e.target.files[0]));
+  // Arrived with a file already chosen elsewhere: skip straight to the preview.
+  if(presetFile){
+    overlay.querySelector('#bookFilePick').style.display = 'none';
+    takeFile(presetFile);
+  }
 
   overlay.querySelector('#bookImportBtn').addEventListener('click', async ()=>{
     if(!parsed) return;
@@ -1775,6 +1781,40 @@ function initTools(){
   document.getElementById('toolsFileInput').addEventListener('change', async (e)=>{
     const files = Array.from(e.target.files || []);
     if(!files.length) return;
+
+    /* A single book-shaped file is ambiguous: it could be reference material to
+       copy from, or a book to read. An epub is only ever the latter — the
+       material path would just unpack its xhtml into noise — so it goes
+       straight to the shelf; a txt gets the choice. */
+    const one = files.length === 1 ? files[0] : null;
+    const isEpub = one && /\.epub$/i.test(one.name);
+    const isTxt  = one && /\.txt$/i.test(one.name);
+    if(isEpub || isTxt){
+      e.target.value = '';
+      if(isEpub){ openImportBookFlow(one); return; }
+      const sheet = openModal(`
+        <div class="modal-header"><h2>这个 txt 怎么用</h2><button class="modal-close" data-close>${ICONS.close}</button></div>
+        <div class="modal-body">
+          <div class="action-sheet-item" id="asBook">
+            <div class="glyph">${ICONS.book}</div>
+            <div class="txt"><div class="t1">整本进书架</div><div class="t2">按章分好,当书来读</div></div>
+          </div>
+          <div class="action-sheet-item" id="asMaterial">
+            <div class="glyph">${ICONS.download}</div>
+            <div class="txt"><div class="t1">存成素材</div><div class="t2">放进素材库,方便一键复制</div></div>
+          </div>
+        </div>
+      `);
+      sheet.querySelector('[data-close]').addEventListener('click', ()=>closeModal(sheet));
+      sheet.querySelector('#asBook').addEventListener('click', ()=>{ closeModal(sheet); openImportBookFlow(one); });
+      sheet.querySelector('#asMaterial').addEventListener('click', ()=>{ closeModal(sheet); importAsMaterials([one]); });
+      return;
+    }
+    await importAsMaterials(files);
+    e.target.value = '';
+  });
+
+  async function importAsMaterials(files){
     const allExisting = await dbGetAll('materials');
     const folders = [...new Set(allExisting.map(m=>m.folder || '未分类'))];
     openFolderPickerSheet(folders, '', async (folderName)=>{
@@ -1793,8 +1833,8 @@ function initTools(){
       materialsFolderFilter = folderName;
       await refreshMaterials();
     });
-    e.target.value = '';
-  });
+  }
+
   document.getElementById('addTextMaterialBtn').addEventListener('click', openTextMaterialEditor);
   document.getElementById('toggleSelectModeBtn').addEventListener('click', ()=>setMaterialsSelectMode(!materialsSelectMode));
   document.getElementById('clearMaterialsBtn').addEventListener('click', async ()=>{
