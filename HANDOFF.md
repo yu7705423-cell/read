@@ -82,8 +82,11 @@ Instruction(共同的指令 / 主题 / 系列)
 
 ### `instructions`
 ```js
-{ id, title, prompt, note, tags:[], createdAt, updatedAt }
+{ id, title, prompt, note, tags:[], source, createdAt, updatedAt }
 ```
+`source` 只有从番外生成器收来的指令才有(`{app:'fanwai', storyId, version, sentAt}`),
+手写的指令没有这个字段,渲染时不要假设它存在。这类指令的 id 是生成器给的
+`fw-<番外id>`,不是 `uid()`。
 
 ### `stories`
 ```js
@@ -156,6 +159,35 @@ Instruction(共同的指令 / 主题 / 系列)
 - tags / 分类 / customCss / 翻页样式全部无损带过来
 
 **旧的 `books` store 迁移后原样保留,永远不要删**——它是唯一的回滚依据。迁移只跑一次(`settings.migratedToV2`),重复加载不会重复建。导入 v1 备份(只有 books)时会把标记重置再跑一次迁移,否则旧备份导进来会变成看不见的数据。
+
+## 与番外生成器的交接(收件箱)
+
+番外生成器(`fanwai` 仓库)负责把脑洞和标签编译成 Prompt,喵喵书阁负责存正文。
+两边的接口就是 **instruction**:生成器产出的一条 Prompt = 这边的一个指令,
+正文写好之后按现有流程建故事、在向导里选这个指令即可。
+
+**同源直通**(两个应用都在 `yu7705423-cell.github.io` 下,分别是 `/fanwai/` 和 `/read/`):
+
+1. 生成器把条目写进 `localStorage['mmr_inbox_fanwai']`,格式
+   `{type:'fanwai-to-meow', v:1, sentAt, items:[...]}`,然后跳到 `/read/#inbox`
+2. 这边 `initFanwaiInbox()`(init 最后一步)读收件箱 → `importFanwaiItems()` 入库 →
+   清空收件箱 → 切到「按指令」视图 → toast
+3. 书阁标签页本来就开着的话,靠 `storage` 事件当场收,不用刷新
+
+**要点**
+
+- **id 是稳定的** `fw-<番外id>`:同一条番外改完再送是**更新**那条指令,不是新增。
+  `createdAt` 保留第一次收到的时间,`title/prompt/tags/note` 覆盖。
+- **收重了也没事**:新开的标签页和已经开着的标签页可能同时收,`fanwaiDraining`
+  挡一层,真的撞上了也只是对同一个 id 覆盖两次。
+- **收件箱内容坏了直接丢掉**,不要让启动流程每次都在这里炸。
+- **不同源就走文件**(各自本地打开、或换了域名):生成器那边自动改成导出
+  `fanwai-to-meow-*.json`,从「设置 → 数据备份 → 导入」进来,走的是同一个
+  `importFanwaiItems()`。
+- **这类文件绝对不能走 `importAllData()`**:它里面有「没有 stories 就重置
+  `migratedToV2` 并重跑迁移」的逻辑,交接文件正好没有 stories,会把旧 books
+  再迁一遍。所以导入处先判 `data.type === 'fanwai-to-meow'` 再分流。
+- 收进来的指令跟手写的指令没有任何区别,导出备份时一起带走。
 
 ## 各模块实现要点
 

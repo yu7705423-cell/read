@@ -3393,8 +3393,16 @@ function initDataBackup(){
     try{
       const text = await file.text();
       const data = JSON.parse(text);
-      await importAllData(data);
-      showToast('导入完成');
+      if(data && data.type === 'fanwai-to-meow'){
+        // 生成器的交接文件只有指令,不能走 importAllData —— 那条路会因为没有
+        // stories 而重置迁移标记,把旧 books 再迁一遍。
+        const n = await importFanwaiItems(data.items);
+        setShelfView('instruction');
+        showToast(n ? ('已收到 ' + n + ' 条番外生成器的指令') : '文件里没有可用的指令');
+      }else{
+        await importAllData(data);
+        showToast('导入完成');
+      }
     }catch(err){
       showToast('导入失败,文件格式不对');
     }
@@ -3450,6 +3458,100 @@ async function importAllData(data){
   }
   for(const m of (data.materials||[])) await dbPut('materials', m);
   for(const p of (data.presets||[])) await dbPut('presets', p);
+}
+
+/* ================= 番外生成器交接 =================
+   番外生成器（同一个站点下的 /fanwai/）把编译好的 Prompt 写进 localStorage 的
+   收件箱，这边打开就自己收成 instructions，不用来回导文件。
+   同一条番外重复送来只会更新原来那条指令，不会堆出一堆重复的。
+   两个应用不同源时（比如各自本地打开）收件箱读不到，生成器那边会自动改成
+   导出文件，走下面 initDataBackup 里的同一个解析函数。 */
+const FANWAI_INBOX_KEY = 'mmr_inbox_fanwai';
+
+function readFanwaiInbox(){
+  let raw = null;
+  try{ raw = localStorage.getItem(FANWAI_INBOX_KEY); }catch(err){ return []; }
+  if(!raw) return [];
+  try{
+    const data = JSON.parse(raw);
+    const items = Array.isArray(data) ? data : (data && data.items);
+    return Array.isArray(items) ? items : [];
+  }catch(err){
+    // 收件箱内容坏了就丢掉,不要每次启动都在这里炸一次
+    try{ localStorage.removeItem(FANWAI_INBOX_KEY); }catch(e){}
+    return [];
+  }
+}
+
+/* 把生成器送来的条目写进 instructions。id 是生成器给的稳定 id(fw-<番外id>),
+   所以改完再送一次是更新,不是新增;createdAt 保留第一次收到的时间。 */
+async function importFanwaiItems(items){
+  let n = 0;
+  for(const item of (items || [])){
+    if(!item || typeof item !== 'object') continue;
+    const prompt = typeof item.prompt === 'string' ? item.prompt : '';
+    if(!prompt.trim()) continue;
+    const id = (typeof item.id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(item.id)) ? item.id : ('fw-' + uid());
+    const prev = await dbGet('instructions', id);
+    const title = (typeof item.title === 'string' && item.title.trim())
+      ? item.title.trim() : (prev ? prev.title : '未命名番外');
+    await dbPut('instructions', {
+      id,
+      title,
+      prompt,
+      note: typeof item.note === 'string' ? item.note : (prev ? prev.note : ''),
+      tags: Array.isArray(item.tags)
+        ? item.tags.filter(t=>typeof t === 'string' && t.trim()).slice(0, 40)
+        : (prev ? prev.tags : []),
+      source: (item.source && typeof item.source === 'object') ? item.source : (prev ? prev.source : null),
+      createdAt: prev ? prev.createdAt : Date.now(),
+      updatedAt: Date.now()
+    });
+    n++;
+  }
+  return n;
+}
+
+/* 收件箱可能被两个标签页同时收(新开的那个 + 已经开着的那个),
+   所以加个锁;就算真的收重了,id 相同也只是覆盖同一条,不会重复。 */
+let fanwaiDraining = false;
+async function drainFanwaiInbox(opts){
+  const announceEmpty = !!(opts && opts.announceEmpty);
+  if(fanwaiDraining) return 0;
+  const items = readFanwaiInbox();
+  if(!items.length){
+    if(announceEmpty) showToast('番外生成器的指令已经在书架里了');
+    return 0;
+  }
+  fanwaiDraining = true;
+  try{
+    const n = await importFanwaiItems(items);
+    try{ localStorage.removeItem(FANWAI_INBOX_KEY); }catch(err){}
+    if(n){
+      setShelfView('instruction');
+      switchTab('shelf');
+      await refreshShelf();
+      showToast('已收到 ' + n + ' 条番外生成器的指令');
+    }
+    return n;
+  }catch(err){
+    console.error('[meow] fanwai inbox failed', err);
+    showToast('番外生成器的指令没能收进来');
+    return 0;
+  }finally{
+    fanwaiDraining = false;
+  }
+}
+
+/* 生成器跳过来时带 #inbox,本来就开着的标签页则靠 storage 事件当场收。 */
+function initFanwaiInbox(){
+  window.addEventListener('storage', (e)=>{
+    if(e.key === FANWAI_INBOX_KEY && e.newValue) drainFanwaiInbox();
+  });
+  window.addEventListener('hashchange', ()=>{
+    if(location.hash === '#inbox') drainFanwaiInbox({announceEmpty:true});
+  });
+  return drainFanwaiInbox({announceEmpty: location.hash === '#inbox'});
 }
 
 /* ================= Search ================= */
@@ -3557,11 +3659,15 @@ async function renderSearch(){
    its characterId / instructionId point, and moving it is a one-field edit. */
 let shelfView = 'story';   // 'character' | 'instruction' | 'story' | 'html'
 
+function setShelfView(view){
+  shelfView = view;
+  document.querySelectorAll('#shelfViewSwitch button').forEach(b=>b.classList.toggle('on', b.dataset.view === view));
+}
+
 function initShelf(){
   document.querySelectorAll('#shelfViewSwitch button').forEach(btn=>{
     btn.addEventListener('click', ()=>{
-      shelfView = btn.dataset.view;
-      document.querySelectorAll('#shelfViewSwitch button').forEach(b=>b.classList.toggle('on', b === btn));
+      setShelfView(btn.dataset.view);
       refreshShelf();
     });
   });
@@ -6002,6 +6108,7 @@ function openEditStory(parentOverlay, story){
   await refreshVoicePresets();
   await refreshSummaryPresets();
   await refreshAnnotatePresets();
+  await initFanwaiInbox();
 })();
 </script>
 </body>
